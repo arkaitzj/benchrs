@@ -31,10 +31,11 @@ pub async fn read_response<T: AsyncRead + Unpin>( mut stream: T) -> Result<()>{
             break;
         }
     }
+    let parsed_len = parsed.unwrap();
+    trace!("Response header: \n{}", std::str::from_utf8(&buffer[0..parsed_len]).unwrap());
 
     if let Some(content_length) = response.headers.iter().find(|he| he.name == "Content-Length") {
         let content_length: usize = std::str::from_utf8(content_length.value)?.parse()?;
-        let parsed_len = parsed.unwrap();
         debug!("Read: {}, parsed: {}, content length: {}", read_amount, parsed_len, content_length);
         let mut left_to_read = (content_length + parsed_len) - read_amount;
         while left_to_read > 0 {
@@ -47,7 +48,6 @@ pub async fn read_response<T: AsyncRead + Unpin>( mut stream: T) -> Result<()>{
         debug!("Transfer encoding");
         let transfer_encoding = std::str::from_utf8(transfer_encoding.value)?;
         assert_eq!(transfer_encoding,"chunked");
-        let parsed_len = parsed.unwrap();
         let body_read = read_amount - parsed_len;
         if body_read < 16 {
             debug!("Not enough body to read chunk header");
