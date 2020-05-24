@@ -5,6 +5,7 @@ authors = ["Arkaitz Jimenez <arkaitzj@gmail.com>"]
 edition = "2018"
 description = "Apache Benchmark style http bench tool written in async rust"
 license = "Apache-2.0"
+repository = "https://github.com/arkaitzj/benchrs"
 
 [dependencies]
 smol = "^0.1.10"
