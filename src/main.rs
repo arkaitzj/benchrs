@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     // Same number of threads as there are CPU cores.
     let num_threads = num_cpus::get().max(1);
     let matches = clap::App::new("Benchrs")
-                          .version("1.0")
+                          .version(env!("CARGO_PKG_VERSION"))
                           .author("Arkaitz Jimenez <arkaitzj@gmail.com>")
                           .about("Does http benchmarks")
                           .arg(clap::Arg::with_name("url")
@@ -143,7 +143,7 @@ fn main() -> Result<()> {
             for i in 0..c {
                 all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k));
             }
-            let what = futures::future::join_all(all_futs).await;
+            let _ = futures::future::join_all(all_futs).await;
     }});
 
     let reporter = Task::spawn({
