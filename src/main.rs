@@ -4,7 +4,7 @@ use futures::prelude::*;
 use smol::{Async, Task};
 use url::Url;
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use log::*;
 use simplelog::*;
 
@@ -12,8 +12,16 @@ mod parser;
 
 #[derive(Debug)]
 enum Event {
-    Connection{id: usize},
-    Request
+    Connection{
+        id: usize,
+        conn_time: Duration,
+        tls_time: Option<Duration>,
+        conn_ready: Duration
+    },
+    Request{
+        id: usize,
+        request_time: Duration
+    }
 }
 
 enum Connection {
@@ -40,17 +48,27 @@ async fn fetch(addr: &str, producer: piper::Receiver<String>, id: usize, event_s
     let mut conn = Connection::Disconnected;
     while let Some(req) = producer.recv().await {
         if conn.is_disconnected() || ! keepalive {
+            let conn_start = Instant::now();
             let stream = Async::<TcpStream>::connect(format!("{}:{}", host, port)).await?;
+            let conn_time = conn_start.elapsed();
+            let mut tls_time = None;
             conn = match url.scheme() {
-                "http"  => { Connection::Plain{stream} },
-                "https" => { Connection::Secure{ stream: async_native_tls::connect(&host, stream).await?}},
+                "http"  => { Connection::Plain{ stream } },
+                "https" => { 
+                    let tls_neg = Instant::now();
+                    let stream = async_native_tls::connect(&host, stream).await?;
+                    tls_time = Some(tls_neg.elapsed());
+                    Connection::Secure{ stream }
+                },
                 scheme => bail!("unsupported scheme: {}", scheme),
 
             };
-            event_sink.send(Event::Connection{id}).await;
+            let conn_ready = conn_start.elapsed();
+            event_sink.send(Event::Connection{id, conn_time, tls_time, conn_ready}).await;
         }
 
         trace!("Sending: \n{}", std::str::from_utf8(req.as_bytes()).unwrap());
+        let request_start = Instant::now();
         match conn {
             Connection::Plain{ref mut stream}=> {
                 stream.write_all(req.as_bytes()).await?;
@@ -62,7 +80,7 @@ async fn fetch(addr: &str, producer: piper::Receiver<String>, id: usize, event_s
             },
             _ => panic!("Disconnected!")
         }
-        event_sink.send(Event::Request).await;
+        event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
     }
     Ok(())
 }
@@ -162,7 +180,6 @@ fn main() -> Result<()> {
     }});
 
     let executor = Task::spawn({
-        let addr = addr.to_owned();
         async move {
             let mut all_futs = Vec::new();
             for i in 0..c {
@@ -171,29 +188,38 @@ fn main() -> Result<()> {
             let _ = futures::future::join_all(all_futs).await;
     }});
 
-    let reporter = Task::spawn({
-        async move {
+    let reporter = Task::spawn(async move {
             let mut nrequest = 0;
             let mut nconnection = 0;
             let start = Instant::now();
+            let mut requests = Vec::new();
             while let Some(ev) = receiver.recv().await {
                 match ev {
-                    Event::Connection{..} => nconnection+=1,
-                    Event::Request => nrequest+=1
+                    Event::Connection{ .. } => {
+                        nconnection+=1;
+                    },
+                    Event::Request{ request_time, ..} => { 
+                        requests.push(request_time.as_millis());
+                        nrequest+=1;
+                    }
                 }
             }
             let end = Instant::now();
 
+            let avg = requests.iter().sum::<u128>() as f32 / requests.len() as f32;
+            requests.sort();
+            let mid = requests.len() / 2;
+            let p95 = (requests.len() as f32 * 0.95).floor() as usize;
+            let p99 = (requests.len() as f32 * 0.99).floor() as usize;
+            let median = requests[mid];
             let elapsed = end-start;
-            info!("Reporter finalised: {} connections, {} requests with avg request time: {}ms", nconnection, nrequest, elapsed.as_millis() / nrequest);
-    }});
+            info!("Ran in {}s {} connections, {} requests with avg request time: {}ms, median: {}ms, 95th percentile: {}ms and 99th percentile: {}ms", elapsed.as_secs_f32(), nconnection, nrequest, avg, median, requests[p95], requests[p99]);
+    });
 
 
-    let start = Instant::now();
     smol::block_on(async {
         futures::join!(executor, producer, reporter);
     });
-    info!("Ran in {}", start.elapsed().as_secs_f32());
     Ok(())
 }
 
