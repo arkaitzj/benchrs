@@ -3,8 +3,8 @@ name = "benchrs"
 version = "0.1.0"
 authors = ["Arkaitz Jimenez <arkaitzj@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Apache Benchmark style http bench tool written in async rust"
+license = "Apache-2.0"
 
 [dependencies]
 smol = "*"
