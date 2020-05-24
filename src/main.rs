@@ -180,7 +180,6 @@ fn main() -> Result<()> {
     }});
 
     let executor = Task::spawn({
-        let addr = addr.to_owned();
         async move {
             let mut all_futs = Vec::new();
             for i in 0..c {
@@ -189,8 +188,7 @@ fn main() -> Result<()> {
             let _ = futures::future::join_all(all_futs).await;
     }});
 
-    let reporter = Task::spawn({
-        async move {
+    let reporter = Task::spawn(async move {
             let mut nrequest = 0;
             let mut nconnection = 0;
             let start = Instant::now();
@@ -216,7 +214,7 @@ fn main() -> Result<()> {
             let median = requests[mid];
             let elapsed = end-start;
             info!("Ran in {}s {} connections, {} requests with avg request time: {}ms, median: {}ms, 95th percentile: {}ms and 99th percentile: {}ms", elapsed.as_secs_f32(), nconnection, nrequest, avg, median, requests[p95], requests[p99]);
-    }});
+    });
 
 
     smol::block_on(async {
