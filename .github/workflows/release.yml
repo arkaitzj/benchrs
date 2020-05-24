@@ -16,6 +16,18 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+        - os: macos-latest
+          BINFILE: target/release/benchrs
+          RELEASE_FILE: macos/benchrs
+
+        - os: ubuntu-latest
+          BINFILE: target/release/benchrs
+          RELEASE_FILE: linux/benchrs
+          
+        - os: windows-latest
+          BINFILE: target/release/benchrs.exe
+          RELEASE_FILE: windows/benchrs.exe
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
@@ -31,7 +43,7 @@ jobs:
       uses: svenstaro/upload-release-action@v1-release
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: target/release/benchrs
-        asset_name: benchrs
+        file: ${{matrix.BINFILE}}
+        asset_name: ${{matrix.RELEASE_FILE}}
         tag: ${{ github.ref }}
         overwrite: true
