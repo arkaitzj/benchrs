@@ -120,6 +120,7 @@ fn main() -> Result<()> {
 
     let _ = SimpleLogger::init(log_level, Config::default());
 
+    info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     info!("Spawning {} threads", num_threads);
     // Run the thread-local and work-stealing executor on a thread pool.
     for _ in 0..num_threads {
@@ -157,13 +158,12 @@ fn main() -> Result<()> {
             for _ in 0..n {
                 s.send(req.clone()).await;
             }
-            info!("Producer finalised");
+            debug!("Producer finalised");
     }});
 
     let executor = Task::spawn({
         let addr = addr.to_owned();
         async move {
-            info!("Hello from an executor thread!");
             let mut all_futs = Vec::new();
             for i in 0..c {
                 all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k));
@@ -191,8 +191,7 @@ fn main() -> Result<()> {
 
     let start = Instant::now();
     smol::block_on(async {
-        let what = futures::join!(executor, producer, reporter);
-        info!("What was: {:?}", what);
+        futures::join!(executor, producer, reporter);
     });
     info!("Ran in {}", start.elapsed().as_secs_f32());
     Ok(())

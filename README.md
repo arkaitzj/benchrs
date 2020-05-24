@@ -1,7 +1,7 @@
 # benchrs
 Apache Benchmark style http bench tool written in async rust
 ```
-Benchrs 0.1.0
+Benchrs 0.1.2
 Arkaitz Jimenez <arkaitzj@gmail.com>
 Does http benchmarks
 
@@ -16,6 +16,7 @@ FLAGS:
 
 OPTIONS:
     -c <concurrency>           Sets the concurrency level
+    -H <header>...             Sets a custom header
     -n <request number>        Sets the number of requests
 
 ARGS:
