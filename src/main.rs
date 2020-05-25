@@ -1,13 +1,11 @@
-use std::net::TcpStream;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result};
 use futures::prelude::*;
-use smol::{Async, Task};
+use smol::Task;
 use url::Url;
 use std::thread;
 use std::time::{Instant, Duration};
 use log::*;
 use simplelog::*;
-use std::str::from_utf8;
 use crate::fetcher::fetch;
 
 mod parser;
