@@ -72,11 +72,15 @@ async fn fetch(addr: &str, producer: piper::Receiver<String>, id: usize, event_s
         match conn {
             Connection::Plain{ref mut stream}=> {
                 stream.write_all(req.as_bytes()).await?;
-                parser::read_response(stream).await?;
+                let ctx = parser::read_header(stream).await?;
+                parser::drop_body(stream, ctx).await?;
+//                parser::read_response(stream).await?;
             },
             Connection::Secure{ref mut stream} => {
                 stream.write_all(req.as_bytes()).await.unwrap();
-                parser::read_response(stream).await.context("Reading response")?;
+                let ctx = parser::read_header(stream).await?;
+                parser::drop_body(stream, ctx).await?;
+                //parser::read_response(stream).await.context("Reading response")?;
             },
             _ => panic!("Disconnected!")
         }
