@@ -7,11 +7,14 @@ use std::thread;
 use std::time::{Instant, Duration};
 use log::*;
 use simplelog::*;
+use std::str::from_utf8;
+use crate::fetcher::fetch;
 
 mod parser;
+mod fetcher;
 
 #[derive(Debug)]
-enum Event {
+pub enum Event {
     Connection{
         id: usize,
         conn_time: Duration,
@@ -24,69 +27,58 @@ enum Event {
     }
 }
 
-enum Connection {
-    Plain{ stream: Async<TcpStream>},
-    Secure{ stream: async_native_tls::TlsStream<Async<TcpStream>>},
-    Disconnected
+
+#[derive(Clone)]
+pub struct ProducerRequest {
+    config: RequestConfig,
+    addr: String,
+    headers: Vec<String>
 }
 
-impl Connection {
-    fn is_disconnected(&self) -> bool {
-        match &self {
-            Connection::Disconnected => true,
-            _ => false
-        }
-    }
+#[derive(Clone)]
+pub struct RequestConfig {
+    keepalive: bool,
+    useragent: String
 }
 
-async fn fetch(addr: &str, producer: piper::Receiver<String>, id: usize, event_sink: piper::Sender<Event>, keepalive: bool) -> Result<()> {
-    // Parse the URL.
-    let url = Url::parse(addr)?;
-    let host = url.host().context("cannot parse host")?.to_string();
-    let port = url.port_or_known_default().context("cannot guess port")?;
-
-    let mut conn = Connection::Disconnected;
-    while let Some(req) = producer.recv().await {
-        if conn.is_disconnected() || ! keepalive {
-            let conn_start = Instant::now();
-            let stream = Async::<TcpStream>::connect(format!("{}:{}", host, port)).await?;
-            let conn_time = conn_start.elapsed();
-            let mut tls_time = None;
-            conn = match url.scheme() {
-                "http"  => { Connection::Plain{ stream } },
-                "https" => { 
-                    let tls_neg = Instant::now();
-                    let stream = async_native_tls::connect(&host, stream).await?;
-                    tls_time = Some(tls_neg.elapsed());
-                    Connection::Secure{ stream }
-                },
-                scheme => bail!("unsupported scheme: {}", scheme),
-
-            };
-            let conn_ready = conn_start.elapsed();
-            event_sink.send(Event::Connection{id, conn_time, tls_time, conn_ready}).await;
-        }
-
-        trace!("Sending: \n{}", std::str::from_utf8(req.as_bytes()).unwrap());
-        let request_start = Instant::now();
-        match conn {
-            Connection::Plain{ref mut stream}=> {
-                stream.write_all(req.as_bytes()).await?;
-                let ctx = parser::read_header(stream).await?;
-                parser::drop_body(stream, ctx).await?;
-//                parser::read_response(stream).await?;
-            },
-            Connection::Secure{ref mut stream} => {
-                stream.write_all(req.as_bytes()).await.unwrap();
-                let ctx = parser::read_header(stream).await?;
-                parser::drop_body(stream, ctx).await?;
-                //parser::read_response(stream).await.context("Reading response")?;
-            },
-            _ => panic!("Disconnected!")
-        }
-        event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
+impl ProducerRequest {
+    fn new(addr: &str, user_headers: Vec<String>, config: RequestConfig) -> Self {
+        return ProducerRequest{
+            addr: addr.to_string(),
+            config,
+            headers: user_headers
+        };
     }
-    Ok(())
+    fn redirect(&mut self, addr: &str) {
+       self.addr = addr.to_owned();
+       // Ensure we do not override Host header
+       self.headers.retain(|h| !h.starts_with("Host:") );
+    }
+    fn get_request(&self) -> String {
+        let url: Url = Url::parse(&self.addr).unwrap();
+        let host = url.host().context("cannot parse host").unwrap().to_string();
+        let path = url.path().to_string();
+        let query = match url.query() {
+            Some(q) => format!("?{}", q),
+            None => String::new(),
+        };
+
+        let connection = if self.config.keepalive { "keep-alive" } else { "close" };
+
+        let mut headers = String::new();
+        if ! caseless_find(&self.headers, "Host:")   { headers.push_str(&format!("Host: {}\r\n", host)); }
+        if ! caseless_find(&self.headers, "Accept:") { headers.push_str(&format!("Accept: {}\r\n", "*/*")); }
+        if ! caseless_find(&self.headers, "Connection:") { headers.push_str(&format!("Connection: {}\r\n", connection)); }
+        if ! caseless_find(&self.headers, "User-Agent:") { headers.push_str(&format!("User-Agent: {}\r\n", self.config.useragent)); }
+        self.headers.iter().for_each(|header| headers.push_str(&format!("{}\r\n",header)));
+
+         // Construct a request.
+        let req = format!(
+            "GET {}{} HTTP/1.1\r\n{}\r\n",
+            path, query, headers);
+        return req;
+    }
+
 }
 
 fn main() -> Result<()> {
@@ -155,28 +147,11 @@ fn main() -> Result<()> {
     let producer = Task::spawn({
         let addr = addr.to_owned();
         async move {
-            let url: Url = Url::parse(&addr).unwrap();
-            let host = url.host().context("cannot parse host").unwrap().to_string();
-            let path = url.path().to_string();
-            let query = match url.query() {
-                Some(q) => format!("?{}", q),
-                None => String::new(),
-            };
 
-            let connection = if k { "keep-alive" } else { "close" };
-            let user_agent = format!("BenchRS/{}", env!("CARGO_PKG_VERSION"));
-            let mut headers = String::new();
-            if ! caseless_find(&user_headers, "Host:")   { headers.push_str(&format!("Host: {}\r\n", host)); }
-            if ! caseless_find(&user_headers, "Accept:") { headers.push_str(&format!("Accept: {}\r\n", "*/*")); }
-            if ! caseless_find(&user_headers, "Connection:") { headers.push_str(&format!("Connection: {}\r\n", connection)); }
-            if ! caseless_find(&user_headers, "User-Agent:") { headers.push_str(&format!("User-Agent: {}\r\n", user_agent)); }
-            user_headers.into_iter().for_each(|header| headers.push_str(&format!("{}\r\n",header)));
-
-            // Construct a request.
-            let req = format!(
-                "GET {}{} HTTP/1.1\r\n{}\r\n",
-                path, query, headers);
-
+            let req = ProducerRequest::new(&addr, user_headers, RequestConfig{
+                keepalive: k,
+                useragent:format!("BenchRS/{}", env!("CARGO_PKG_VERSION"))
+            });
             for _ in 0..n {
                 s.send(req.clone()).await;
             }

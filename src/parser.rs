@@ -5,15 +5,20 @@ use futures::prelude::*;
 use std::collections::HashMap;
 use std::str::from_utf8;
 
-struct Response {
-    status: u16,
-    headers: HashMap<String,String>
+pub struct Response {
+    pub status: u16,
+    pub headers: HashMap<String,String>
+}
+impl Response {
+    pub fn is_redirect(&self) -> bool {
+        self.status >= 300 && self.status <= 400
+    }
 }
 pub struct ParseContext {
-    bytes: Vec<u8>,
-    read_idx: usize,
-    write_idx: usize,
-    response: Option<Response>
+    pub bytes: Vec<u8>,
+    pub read_idx: usize,
+    pub write_idx: usize,
+    pub response: Option<Response>
 }
 
 impl ParseContext {
@@ -64,7 +69,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
     return Ok(buffer);
 }
 
-pub async fn drop_body<T: AsyncRead + Unpin>(mut stream: T, mut parse_context: ParseContext) -> Result<()> {
+pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: ParseContext) -> Result<()> {
     let headers = parse_context.response.unwrap().headers;
     let mut buffer = parse_context.bytes;
     let read_amount = &mut parse_context.write_idx;
@@ -123,7 +128,6 @@ pub async fn drop_body<T: AsyncRead + Unpin>(mut stream: T, mut parse_context: P
             debug!("Extra read was: {}", extra_amount);
             *read_amount += extra_amount;
         }
-
     }
 
     return Ok(());
