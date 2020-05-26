@@ -1,15 +1,16 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use futures::prelude::*;
 use smol::Task;
-use url::Url;
 use std::thread;
 use std::time::{Instant, Duration};
 use log::*;
 use simplelog::*;
 use crate::fetcher::fetch;
+use crate::producer::{ProducerRequest, RequestConfig};
 
 mod parser;
 mod fetcher;
+mod producer;
 
 #[derive(Debug)]
 pub enum Event {
@@ -26,58 +27,6 @@ pub enum Event {
 }
 
 
-#[derive(Clone)]
-pub struct ProducerRequest {
-    config: RequestConfig,
-    addr: String,
-    headers: Vec<String>
-}
-
-#[derive(Clone)]
-pub struct RequestConfig {
-    keepalive: bool,
-    useragent: String
-}
-
-impl ProducerRequest {
-    fn new(addr: &str, user_headers: Vec<String>, config: RequestConfig) -> Self {
-        return ProducerRequest{
-            addr: addr.to_string(),
-            config,
-            headers: user_headers
-        };
-    }
-    fn redirect(&mut self, addr: &str) {
-       self.addr = addr.to_owned();
-       // Ensure we do not override Host header
-       self.headers.retain(|h| !h.starts_with("Host:") );
-    }
-    fn get_request(&self) -> String {
-        let url: Url = Url::parse(&self.addr).unwrap();
-        let host = url.host().context("cannot parse host").unwrap().to_string();
-        let path = url.path().to_string();
-        let query = match url.query() {
-            Some(q) => format!("?{}", q),
-            None => String::new(),
-        };
-
-        let connection = if self.config.keepalive { "keep-alive" } else { "close" };
-
-        let mut headers = String::new();
-        if ! caseless_find(&self.headers, "Host:")   { headers.push_str(&format!("Host: {}\r\n", host)); }
-        if ! caseless_find(&self.headers, "Accept:") { headers.push_str(&format!("Accept: {}\r\n", "*/*")); }
-        if ! caseless_find(&self.headers, "Connection:") { headers.push_str(&format!("Connection: {}\r\n", connection)); }
-        if ! caseless_find(&self.headers, "User-Agent:") { headers.push_str(&format!("User-Agent: {}\r\n", self.config.useragent)); }
-        self.headers.iter().for_each(|header| headers.push_str(&format!("{}\r\n",header)));
-
-         // Construct a request.
-        let req = format!(
-            "GET {}{} HTTP/1.1\r\n{}\r\n",
-            path, query, headers);
-        return req;
-    }
-
-}
 
 fn main() -> Result<()> {
 
@@ -134,9 +83,7 @@ fn main() -> Result<()> {
 
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     info!("Spawning {} threads", num_threads);
-    // Run the thread-local and work-stealing executor on a thread pool.
     for _ in 0..num_threads {
-	// A pending future is one that simply yields forever.
 	thread::spawn(|| smol::run(future::pending::<()>()));
     }
 
@@ -148,7 +95,7 @@ fn main() -> Result<()> {
 
             let req = ProducerRequest::new(&addr, user_headers, RequestConfig{
                 keepalive: k,
-                useragent:format!("BenchRS/{}", env!("CARGO_PKG_VERSION"))
+                ..RequestConfig::default()
             });
             for _ in 0..n {
                 s.send(req.clone()).await;
@@ -200,12 +147,4 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn caseless_find<T: AsRef<str>>(haystack: &[T], needle: &str) -> bool {
 
-    for item in haystack {
-        if (*item).as_ref().to_lowercase().starts_with(&needle.to_lowercase()) {
-            return true;
-        }
-    }
-    return false;
-}
