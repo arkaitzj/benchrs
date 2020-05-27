@@ -32,7 +32,8 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
     let port = url.port_or_known_default().context("cannot guess port")?;
 
     let mut conn = Connection::Disconnected;
-    while let Some(mut request) = producer.recv().await {
+    debug!("Fetcher {} started", id);
+    'recv_loop: while let Some(mut request) = producer.recv().await {
         let mut finished = false;
         while !finished {
             if conn.is_disconnected() || ! keepalive {
@@ -56,15 +57,23 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
             }
 
             let request_start = Instant::now();
-            finished = match conn {
-                Connection::Plain{ref mut stream}  => do_request(stream, &mut request).await?,
-                Connection::Secure{ref mut stream} => do_request(stream, &mut request).await?,
+            let req_result = match conn {
+                Connection::Plain{ref mut stream}  => do_request(stream, &mut request).await,
+                Connection::Secure{ref mut stream} => do_request(stream, &mut request).await,
                 _ => panic!("Disconnected!")
+            };
+            finished = if let Ok(success) = req_result {
+                success
+            } else {
+                debug!("Error doing request: {:?}", req_result);
+                conn = Connection::Disconnected;
+                continue 'recv_loop;
             };
             event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
         }
 
     }
+    debug!("Fetcher {} finished", id);
     Ok(())
 }
 
@@ -73,7 +82,7 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
     stream.write_all(req.as_bytes()).await?;
-    let ctx = parser::read_header(stream).await?;
+    let ctx = parser::read_header(stream).await.context("Header Parsing")?;
     trace!("Response header: \n{}", from_utf8(&ctx.bytes[0..ctx.read_idx])?);
 
     let mut redirect_to = None;

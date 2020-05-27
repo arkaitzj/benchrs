@@ -7,6 +7,8 @@ use log::*;
 use simplelog::*;
 use crate::fetcher::fetch;
 use crate::producer::{ProducerRequest, RequestConfig};
+use std::io;
+use smol::Timer;
 
 mod parser;
 mod fetcher;
@@ -98,7 +100,13 @@ fn main() -> Result<()> {
                 ..RequestConfig::default()
             });
             for _ in 0..n {
-                s.send(req.clone()).await;
+	        futures::select! {
+                    _ = s.send(req.clone()).fuse() => {},
+                    _ = smol::Timer::after(Duration::from_secs(5)).fuse() => {
+                        error!("Producer stopped after waiting with a full queue");
+                        break;
+                    }
+                }
             }
             debug!("Producer finalised");
     }});
@@ -109,7 +117,11 @@ fn main() -> Result<()> {
             for i in 0..c {
                 all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k));
             }
-            let _ = futures::future::join_all(all_futs).await;
+            let results = futures::future::join_all(all_futs).await;
+            let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
+            if !failures.is_empty() {
+                error!("{} fetchers failed and {} succeeded", failures.len(), successes.len());
+            }
     }});
 
     let reporter = Task::spawn(async move {

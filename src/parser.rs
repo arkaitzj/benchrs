@@ -44,7 +44,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
     let mut parse_errors = 0;
     loop {
         read_amount += stream.read(&mut buffer.bytes[read_amount..]).await?;
-        let res = response.parse(&buffer.bytes).context("Parsing");
+        let res = response.parse(&buffer.bytes[0..read_amount]).context("Parsing header");
         if res.is_err() && parse_errors < 2 {
             headers = [httparse::EMPTY_HEADER; 32];
             response = httparse::Response::new(&mut headers);
@@ -77,7 +77,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
 
     if let Some(content_length) = headers.iter().find(|(hname,_)| *hname == "Content-Length") {
         let content_length: usize = content_length.1.parse()?;
-        debug!("Read: {}, parsed: {}, content length: {}", read_amount, parsed_len, content_length);
+        trace!("Read: {}, parsed: {}, content length: {}", read_amount, parsed_len, content_length);
         let mut left_to_read = (content_length + *parsed_len) - *read_amount;
         while left_to_read > 0 {
             let to_read = std::cmp::min(left_to_read, buffer.len());
