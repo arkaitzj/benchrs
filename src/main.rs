@@ -1,17 +1,19 @@
-use std::net::TcpStream;
-use anyhow::{bail, Context as _, Result};
+use anyhow::Result;
 use futures::prelude::*;
-use smol::{Async, Task};
-use url::Url;
+use smol::Task;
 use std::thread;
 use std::time::{Instant, Duration};
 use log::*;
 use simplelog::*;
+use crate::fetcher::fetch;
+use crate::producer::{ProducerRequest, RequestConfig};
 
 mod parser;
+mod fetcher;
+mod producer;
 
 #[derive(Debug)]
-enum Event {
+pub enum Event {
     Connection{
         id: usize,
         conn_time: Duration,
@@ -24,66 +26,7 @@ enum Event {
     }
 }
 
-enum Connection {
-    Plain{ stream: Async<TcpStream>},
-    Secure{ stream: async_native_tls::TlsStream<Async<TcpStream>>},
-    Disconnected
-}
 
-impl Connection {
-    fn is_disconnected(&self) -> bool {
-        match &self {
-            Connection::Disconnected => true,
-            _ => false
-        }
-    }
-}
-
-async fn fetch(addr: &str, producer: piper::Receiver<String>, id: usize, event_sink: piper::Sender<Event>, keepalive: bool) -> Result<()> {
-    // Parse the URL.
-    let url = Url::parse(addr)?;
-    let host = url.host().context("cannot parse host")?.to_string();
-    let port = url.port_or_known_default().context("cannot guess port")?;
-
-    let mut conn = Connection::Disconnected;
-    while let Some(req) = producer.recv().await {
-        if conn.is_disconnected() || ! keepalive {
-            let conn_start = Instant::now();
-            let stream = Async::<TcpStream>::connect(format!("{}:{}", host, port)).await?;
-            let conn_time = conn_start.elapsed();
-            let mut tls_time = None;
-            conn = match url.scheme() {
-                "http"  => { Connection::Plain{ stream } },
-                "https" => { 
-                    let tls_neg = Instant::now();
-                    let stream = async_native_tls::connect(&host, stream).await?;
-                    tls_time = Some(tls_neg.elapsed());
-                    Connection::Secure{ stream }
-                },
-                scheme => bail!("unsupported scheme: {}", scheme),
-
-            };
-            let conn_ready = conn_start.elapsed();
-            event_sink.send(Event::Connection{id, conn_time, tls_time, conn_ready}).await;
-        }
-
-        trace!("Sending: \n{}", std::str::from_utf8(req.as_bytes()).unwrap());
-        let request_start = Instant::now();
-        match conn {
-            Connection::Plain{ref mut stream}=> {
-                stream.write_all(req.as_bytes()).await?;
-                parser::read_response(stream).await?;
-            },
-            Connection::Secure{ref mut stream} => {
-                stream.write_all(req.as_bytes()).await.unwrap();
-                parser::read_response(stream).await.context("Reading response")?;
-            },
-            _ => panic!("Disconnected!")
-        }
-        event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
-    }
-    Ok(())
-}
 
 fn main() -> Result<()> {
 
@@ -140,9 +83,7 @@ fn main() -> Result<()> {
 
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     info!("Spawning {} threads", num_threads);
-    // Run the thread-local and work-stealing executor on a thread pool.
     for _ in 0..num_threads {
-	// A pending future is one that simply yields forever.
 	thread::spawn(|| smol::run(future::pending::<()>()));
     }
 
@@ -151,41 +92,35 @@ fn main() -> Result<()> {
     let producer = Task::spawn({
         let addr = addr.to_owned();
         async move {
-            let url: Url = Url::parse(&addr).unwrap();
-            let host = url.host().context("cannot parse host").unwrap().to_string();
-            let path = url.path().to_string();
-            let query = match url.query() {
-                Some(q) => format!("?{}", q),
-                None => String::new(),
-            };
 
-            let connection = if k { "keep-alive" } else { "close" };
-            let user_agent = format!("BenchRS/{}", env!("CARGO_PKG_VERSION"));
-            let mut headers = String::new();
-            if ! caseless_find(&user_headers, "Host:")   { headers.push_str(&format!("Host: {}\r\n", host)); }
-            if ! caseless_find(&user_headers, "Accept:") { headers.push_str(&format!("Accept: {}\r\n", "*/*")); }
-            if ! caseless_find(&user_headers, "Connection:") { headers.push_str(&format!("Connection: {}\r\n", connection)); }
-            if ! caseless_find(&user_headers, "User-Agent:") { headers.push_str(&format!("User-Agent: {}\r\n", user_agent)); }
-            user_headers.into_iter().for_each(|header| headers.push_str(&format!("{}\r\n",header)));
-
-            // Construct a request.
-            let req = format!(
-                "GET {}{} HTTP/1.1\r\n{}\r\n",
-                path, query, headers);
-
+            let req = ProducerRequest::new(&addr, user_headers, RequestConfig{
+                keepalive: k,
+                ..RequestConfig::default()
+            });
             for _ in 0..n {
-                s.send(req.clone()).await;
+	        futures::select! {
+                    _ = s.send(req.clone()).fuse() => {},
+                    _ = smol::Timer::after(Duration::from_secs(5)).fuse() => {
+                        error!("Producer stopped after waiting with a full queue");
+                        break;
+                    }
+                }
             }
             debug!("Producer finalised");
     }});
 
     let executor = Task::spawn({
+        let r = r.clone();
         async move {
             let mut all_futs = Vec::new();
             for i in 0..c {
-                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k));
+                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k, None));
             }
-            let _ = futures::future::join_all(all_futs).await;
+            let results = futures::future::join_all(all_futs).await;
+            let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
+            if !failures.is_empty() {
+                error!("{} fetchers failed and {} succeeded", failures.len(), successes.len());
+            }
     }});
 
     let reporter = Task::spawn(async move {
@@ -201,6 +136,10 @@ fn main() -> Result<()> {
                     Event::Request{ request_time, ..} => { 
                         requests.push(request_time.as_millis());
                         nrequest+=1;
+
+                        if nrequest % 1000 == 0 {
+                            debug!("{} requests, queue: {}", nrequest, r.len());
+                        }
                     }
                 }
             }
@@ -223,12 +162,4 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn caseless_find<T: AsRef<str>>(haystack: &[T], needle: &str) -> bool {
 
-    for item in haystack {
-        if (*item).as_ref().to_lowercase().starts_with(&needle.to_lowercase()) {
-            return true;
-        }
-    }
-    return false;
-}
