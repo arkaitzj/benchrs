@@ -84,11 +84,11 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
     if let Some(content_length) = headers.iter().find(|(hname,_)| *hname == "Content-Length") {
         let content_length: usize = content_length.1.parse()?;
         trace!("Read: {}, parsed: {}, content length: {}", read_amount, parsed_len, content_length);
-        let response_size = (content_length + *parsed_len);
+        let response_size = content_length + *parsed_len;
         let mut left_to_read = response_size - min(*read_amount, response_size);
         while left_to_read > 0 {
             let to_read = std::cmp::min(left_to_read, buffer.len());
-    //        info!("Discarding {} bytes", to_read);
+            trace!("Discarding {} bytes", to_read);
             stream.read_exact(&mut buffer[0..to_read]).await?;
             left_to_read -= to_read;
         }
@@ -143,10 +143,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
-    use smol::Task;
-    use simplelog::*;
-    use crate::producer::*;
+    //use simplelog::*;
     use std::pin::Pin;
     use std::task::Poll;
     use std::cmp::min;
@@ -166,7 +163,7 @@ mod tests {
     }
 
     impl AsyncRead for AsyncBuffer {
-	fn poll_read( mut self: Pin<&mut Self>, cx: &mut futures::task::Context, buf: &mut [u8])  -> Poll<Result<usize, futures::io::Error>> {
+	fn poll_read( mut self: Pin<&mut Self>, _cx: &mut futures::task::Context, buf: &mut [u8])  -> Poll<Result<usize, futures::io::Error>> {
 	    let chunk_size = min(buf.len(), self.bytes.len()-self.read_ptr);
             buf[0..chunk_size].copy_from_slice(&self.bytes[self.read_ptr..self.read_ptr+chunk_size]);
             self.read_ptr += chunk_size;
@@ -183,13 +180,13 @@ Content-Length: 47
 
     #[test]
     fn test_parse() {
-        let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+        //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
         let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
         smol::run(async {
             let ctx = read_header(&mut stream).await?;
             drop_body(&mut stream, ctx).await?;
             Result::<()>::Ok(())
-        });
+        }).unwrap();
     }
 }
 

@@ -142,7 +142,7 @@ mod tests {
     use smol::Task;
     use simplelog::*;
     use crate::producer::*;
-    use async_native_tls::{Identity, TlsAcceptor, TlsStream};
+    use async_native_tls::{Identity, TlsAcceptor};
 	
 
 
@@ -158,13 +158,13 @@ mod tests {
                 ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
                 ServerControl::CloseConnection
             ];
-            server_mock(responses.to_vec()).await;
+            server_mock(responses.to_vec()).await?;
 
             info!("Spawning test");
             let addr = "https://127.0.0.1:8001";
             let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
             let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
-            Task::spawn(async move { fetcher.await;}).detach();
+            Task::spawn(async move { fetcher.await.unwrap();}).detach();
 
             send.send(ProducerRequest::new(&addr, vec![], RequestConfig{
                 keepalive: true,
@@ -178,27 +178,23 @@ mod tests {
             })).await;
             drop(send);
             Result::<()>::Ok(())
-        });
+        }).unwrap();
 
     }
 
+    const RESPONSE: &[u8] = br#"
+    HTTP/1.1 200 OK
+    Content-Type: text/html
+    Content-Length: 47
 
-const RESPONSE: &[u8] = br#"
-HTTP/1.1 200 OK
-Content-Type: text/html
-Content-Length: 47
+    <!DOCTYPE html><html><body>Hello!</body></html>
+    "#;
 
-<!DOCTYPE html><html><body>Hello!</body></html>
-"#;
-
-#[derive(Clone)]
-enum ServerControl {
-    Serve(String),
-    CloseConnection
-}
-
-
-
+    #[derive(Clone)]
+    enum ServerControl {
+        Serve(String),
+        CloseConnection
+    }
 
     /// Listens for incoming connections and serves them.
     async fn listen(listener: Async<TcpListener>, responses: Vec<ServerControl>, tls: Option<TlsAcceptor>) -> Result<()> {
@@ -210,7 +206,7 @@ enum ServerControl {
 
 	loop {
 	    // Accept the next connection.
-	    let (mut stream, _) = listener.accept().await.unwrap();
+	    let (stream, _) = listener.accept().await.unwrap();
             let tls = tls.clone();	
             info!("Accepted request!");
 	    match tls {
@@ -252,7 +248,7 @@ enum ServerControl {
         let http = listen(Async::<TcpListener>::bind("127.0.0.1:8000")?, responses.clone(), None);
         let https = listen(Async::<TcpListener>::bind("127.0.0.1:8001")?, responses.clone(), Some(tls));
         Task::spawn( async {
-            future::try_join(http, https).await;
+            future::try_join(http, https).await.unwrap();
         }).detach();
         Ok(())
     }
