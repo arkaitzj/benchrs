@@ -42,7 +42,6 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
         while !finished {
             if conn.is_disconnected() || ! keepalive {
                 let conn_start = Instant::now();
-                info!("Connect!");
                 let stream = Async::<TcpStream>::connect(format!("{}:{}", host, port)).await?;
                 let conn_time = conn_start.elapsed();
                 let mut tls_time = None;
@@ -73,14 +72,25 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
                 Connection::Secure{ref mut stream} => do_request(stream, &mut request).await,
                 _ => panic!("Disconnected!")
             };
-            finished = if let Ok(success) = req_result {
-                trace!("Sucess handling request");
-                success
+            if let Ok(status) = req_result {
+                match status {
+                    Status::Redirect => {
+                        finished = false;
+                    },
+                    Status::Continue => {
+                        finished = true;
+                    },
+                    Status::CloseConnection => {
+                        trace!("Response closed the connection, disconnecting...");
+                        conn = Connection::Disconnected;
+                        finished = true;
+                    }
+                }
             } else {
                 debug!("Error doing request: {:?}", req_result);
                 conn = Connection::Disconnected;
                 continue 'recv_loop;
-            };
+            }
             event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
         }
         req_handled += 1;
@@ -91,31 +101,38 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
     Ok(())
 }
 
-async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: &mut ProducerRequest) -> Result<bool> {
+#[derive(Debug)]
+enum Status{
+    Continue,
+    CloseConnection,
+    Redirect
+}
+
+async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: &mut ProducerRequest) -> Result<Status> {
     
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
     stream.write_all(req.as_bytes()).await?;
-    trace!("Reading header...");
-    let ctx = parser::read_header(stream).await.context("Header Parsing")?;
+    let ctx = parser::read_header(stream).await.context("Header Parsing").unwrap();
     trace!("Response header: \n{}", from_utf8(&ctx.bytes[0..ctx.read_idx])?);
 
-    let mut redirect_to = None;
+    let mut status = Status::Continue;
     if let Some(resp) = ctx.response.as_ref() {
         if resp.is_redirect() {
-            redirect_to = Some(resp.headers["Location"].to_owned());
-
+            trace!("Redirecting...");
+            let redirect_to = resp.headers["Location"].to_owned();
+            request.redirect(&redirect_to);
+            status = Status::Redirect;
+        }
+        if resp.headers.contains_key("Connection") {
+            if resp.headers["Connection"] == "close" {
+                status = Status::CloseConnection;
+            }
         }
     }
     parser::drop_body(stream, ctx).await?;
     trace!("Body dropped!");
-    if let Some(addr) = redirect_to {
-        request.redirect(&addr);
-        trace!("Redirecting...");
-        // Not finished
-        return Ok(false)
-    }
-    return Ok(true);
+    return Ok(status);
 }
 
 #[cfg(test)]

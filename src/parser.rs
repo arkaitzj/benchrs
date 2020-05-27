@@ -4,6 +4,7 @@ use anyhow::{Result, Context};
 use futures::prelude::*;
 use std::collections::HashMap;
 use std::str::from_utf8;
+use std::cmp::min;
 
 #[derive(Debug)]
 pub struct Response {
@@ -46,6 +47,9 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
     let mut parse_errors = 0;
     loop {
         read_amount += stream.read(&mut buffer.bytes[read_amount..]).await?;
+        if read_amount == 0 {
+            return Err(anyhow::Error::msg("Connection closed"));
+        }
         let res = response.parse(&buffer.bytes[0..read_amount]).context(format!("Parsing header: {:?}",from_utf8(&buffer.bytes[0..read_amount])));
         if res.is_err() && parse_errors < 2 {
             headers = [httparse::EMPTY_HEADER; 32];
@@ -66,7 +70,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
         status: response.code.unwrap(),
         headers: headers.iter().filter(|h| **h !=httparse::EMPTY_HEADER).map(|h| (h.name.to_owned(), from_utf8(h.value).unwrap().to_owned())).collect()
     });
-    buffer.read_idx = parsed.unwrap() + 1;
+    buffer.read_idx = parsed.unwrap();
     buffer.write_idx = read_amount;
     return Ok(buffer);
 }
@@ -80,7 +84,8 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
     if let Some(content_length) = headers.iter().find(|(hname,_)| *hname == "Content-Length") {
         let content_length: usize = content_length.1.parse()?;
         trace!("Read: {}, parsed: {}, content length: {}", read_amount, parsed_len, content_length);
-        let mut left_to_read = (content_length + *parsed_len) - *read_amount;
+        let response_size = (content_length + *parsed_len);
+        let mut left_to_read = response_size - min(*read_amount, response_size);
         while left_to_read > 0 {
             let to_read = std::cmp::min(left_to_read, buffer.len());
     //        info!("Discarding {} bytes", to_read);
@@ -145,7 +150,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::Poll;
     use std::cmp::min;
-	
+
 
     struct AsyncBuffer {
         bytes: Vec<u8>,
@@ -174,12 +179,11 @@ HTTP/1.1 200 OK
 Content-Type: text/html
 Content-Length: 47
 
-<!DOCTYPE html><html><body>Hello!</body></html>
-"#;
+<!DOCTYPE html><html><body>Hello!</body></html>"#;
 
     #[test]
     fn test_parse() {
-    //    let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+        let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
         let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
         smol::run(async {
             let ctx = read_header(&mut stream).await?;
