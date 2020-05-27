@@ -114,7 +114,7 @@ fn main() -> Result<()> {
         async move {
             let mut all_futs = Vec::new();
             for i in 0..c {
-                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k));
+                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k, None));
             }
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());

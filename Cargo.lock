@@ -80,6 +80,7 @@ dependencies = [
  "futures",
  "httparse",
  "log",
+ "native-tls",
  "num_cpus",
  "piper",
  "simplelog",

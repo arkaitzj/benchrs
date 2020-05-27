@@ -179,7 +179,7 @@ Content-Length: 47
 
     #[test]
     fn test_parse() {
-        let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+    //    let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
         let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
         smol::run(async {
             let ctx = read_header(&mut stream).await?;
