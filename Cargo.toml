@@ -1,6 +1,6 @@
 [package]
 name = "benchrs"
-version = "0.1.5-alpha.0"
+version = "0.1.5"
 authors = ["Arkaitz Jimenez <arkaitzj@gmail.com>"]
 edition = "2018"
 description = "Apache Benchmark style http bench tool written in async rust"
