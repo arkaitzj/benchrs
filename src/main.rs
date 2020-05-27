@@ -7,8 +7,6 @@ use log::*;
 use simplelog::*;
 use crate::fetcher::fetch;
 use crate::producer::{ProducerRequest, RequestConfig};
-use std::io;
-use smol::Timer;
 
 mod parser;
 mod fetcher;
@@ -112,6 +110,7 @@ fn main() -> Result<()> {
     }});
 
     let executor = Task::spawn({
+        let r = r.clone();
         async move {
             let mut all_futs = Vec::new();
             for i in 0..c {
@@ -137,6 +136,10 @@ fn main() -> Result<()> {
                     Event::Request{ request_time, ..} => { 
                         requests.push(request_time.as_millis());
                         nrequest+=1;
+
+                        if nrequest % 1000 == 0 {
+                            debug!("{} requests, queue: {}", nrequest, r.len());
+                        }
                     }
                 }
             }

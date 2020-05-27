@@ -5,6 +5,7 @@ use futures::prelude::*;
 use std::collections::HashMap;
 use std::str::from_utf8;
 
+#[derive(Debug)]
 pub struct Response {
     pub status: u16,
     pub headers: HashMap<String,String>
@@ -14,6 +15,7 @@ impl Response {
         self.status >= 300 && self.status <= 400
     }
 }
+#[derive(Debug)]
 pub struct ParseContext {
     pub bytes: Vec<u8>,
     pub read_idx: usize,
@@ -44,7 +46,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
     let mut parse_errors = 0;
     loop {
         read_amount += stream.read(&mut buffer.bytes[read_amount..]).await?;
-        let res = response.parse(&buffer.bytes[0..read_amount]).context("Parsing header");
+        let res = response.parse(&buffer.bytes[0..read_amount]).context(format!("Parsing header: {:?}",from_utf8(&buffer.bytes[0..read_amount])));
         if res.is_err() && parse_errors < 2 {
             headers = [httparse::EMPTY_HEADER; 32];
             response = httparse::Response::new(&mut headers);
@@ -64,7 +66,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
         status: response.code.unwrap(),
         headers: headers.iter().filter(|h| **h !=httparse::EMPTY_HEADER).map(|h| (h.name.to_owned(), from_utf8(h.value).unwrap().to_owned())).collect()
     });
-    buffer.read_idx = parsed.unwrap();
+    buffer.read_idx = parsed.unwrap() + 1;
     buffer.write_idx = read_amount;
     return Ok(buffer);
 }
@@ -86,7 +88,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
             left_to_read -= to_read;
         }
     } else if let Some(transfer_encoding) = headers.iter().find(|(hname,_)| *hname == "Transfer-Encoding") {
-        debug!("Transfer encoding");
+        trace!("Transfer encoding");
         let transfer_encoding = transfer_encoding.1;
         assert_eq!(transfer_encoding,"chunked");
         let body_read = *read_amount - *parsed_len;
@@ -96,7 +98,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
         }
         let mut chunk_header_start = *parsed_len;
         loop {
-            debug!("First bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_start+4]).unwrap());
+            trace!("First bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_start+4]).unwrap());
             let chunk_header_pos = &buffer[chunk_header_start..].iter().position(|x| x == &b'\r').unwrap();
             let chunk_header_end = chunk_header_start + chunk_header_pos;
 
@@ -105,30 +107,85 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
             let chunk_size_str = std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap().to_owned();
             let chunk_size = usize::from_str_radix(&chunk_size_str, 16).context("Chunk size not in hex")?;
             if chunk_size == 0 {
-                debug!("Last chunk ingested");
+                trace!("Last chunk ingested");
                 break;
             }
 
             let left_in_buffer = *read_amount - (chunk_header_end+1);
-            debug!("New chunk size is {} we have {} left in buffer", chunk_size, left_in_buffer);
+            trace!("New chunk size is {} we have {} left in buffer", chunk_size, left_in_buffer);
             let chunk_size = chunk_size + 3; // \r\n closes the chunk
             let left_to_read = chunk_size - left_in_buffer;
-            debug!("{} left to read ", left_to_read);
+            trace!("{} left to read ", left_to_read);
 
             let to_read = left_to_read;
             if left_to_read > buffer.len() {
                 buffer.resize(to_read + 1024, 0);
             }
 
-            debug!("Reading: {}", to_read);
+            trace!("Reading: {}", to_read);
             stream.read_exact(&mut buffer[0..to_read]).await?;
             chunk_header_start = left_to_read;
             *read_amount = to_read;
             let extra_amount = stream.read(&mut buffer[to_read..]).await?;
-            debug!("Extra read was: {}", extra_amount);
+            trace!("Extra read was: {}", extra_amount);
             *read_amount += extra_amount;
         }
     }
 
     return Ok(());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use smol::Task;
+    use simplelog::*;
+    use crate::producer::*;
+    use std::pin::Pin;
+    use std::task::Poll;
+    use std::cmp::min;
+	
+
+    struct AsyncBuffer {
+        bytes: Vec<u8>,
+        read_ptr: usize
+    }
+    impl AsyncBuffer {
+        fn new(vec: Vec<u8>) -> Self {
+            AsyncBuffer{
+                bytes: vec,
+                read_ptr: 0
+            }
+        }
+    }
+
+    impl AsyncRead for AsyncBuffer {
+	fn poll_read( mut self: Pin<&mut Self>, cx: &mut futures::task::Context, buf: &mut [u8])  -> Poll<Result<usize, futures::io::Error>> {
+	    let chunk_size = min(buf.len(), self.bytes.len()-self.read_ptr);
+            buf[0..chunk_size].copy_from_slice(&self.bytes[self.read_ptr..self.read_ptr+chunk_size]);
+            self.read_ptr += chunk_size;
+            return Poll::Ready(Ok(chunk_size))
+	}
+    }
+
+const RESPONSE: &[u8] = br#"
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 47
+
+<!DOCTYPE html><html><body>Hello!</body></html>
+"#;
+
+    #[test]
+    fn test_parse() {
+        let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+        let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
+        smol::run(async {
+            let ctx = read_header(&mut stream).await?;
+            drop_body(&mut stream, ctx).await?;
+            Result::<()>::Ok(())
+        });
+    }
+}
+

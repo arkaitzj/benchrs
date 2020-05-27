@@ -26,15 +26,18 @@ impl Connection {
 
 
 pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: usize, event_sink: piper::Sender<Event>, keepalive: bool) -> Result<()> {
+    trace!("Fetch!");
     // Parse the URL.
     let url = Url::parse(addr)?;
     let host = url.host().context("cannot parse host")?.to_string();
     let port = url.port_or_known_default().context("cannot guess port")?;
 
+    let mut req_handled = 0;
     let mut conn = Connection::Disconnected;
     debug!("Fetcher {} started", id);
     'recv_loop: while let Some(mut request) = producer.recv().await {
         let mut finished = false;
+
         while !finished {
             if conn.is_disconnected() || ! keepalive {
                 let conn_start = Instant::now();
@@ -56,6 +59,7 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
                 event_sink.send(Event::Connection{id, conn_time, tls_time, conn_ready}).await;
             }
 
+            debug!("Going for more!");
             let request_start = Instant::now();
             let req_result = match conn {
                 Connection::Plain{ref mut stream}  => do_request(stream, &mut request).await,
@@ -71,6 +75,8 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
             };
             event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
         }
+        req_handled += 1;
+        debug!("[{}] handled: {}, queue size: {}", id, req_handled, producer.len());
 
     }
     debug!("Fetcher {} finished", id);
@@ -81,7 +87,7 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
     
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
-    stream.write_all(req.as_bytes()).await?;
+    stream.write_all(req.as_bytes()).await.unwrap();
     let ctx = parser::read_header(stream).await.context("Header Parsing")?;
     trace!("Response header: \n{}", from_utf8(&ctx.bytes[0..ctx.read_idx])?);
 
@@ -101,3 +107,94 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
     }
     return Ok(true);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use smol::Task;
+    use simplelog::*;
+    use crate::producer::*;
+	
+
+
+
+    #[test]
+    fn test_fetch() {
+
+        let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+	let (send,recv) = piper::chan(100);
+	let (evsend, evrecv) = piper::chan(100);
+
+        smol::run(async {
+            let mut server = server_mock().boxed().fuse();
+
+            let mut test = async move {
+                info!("Spawning test");
+		let fetcher = fetch("http://127.0.0.1:8000", recv, 0, evsend, true);
+		Task::spawn(async move { fetcher.await;}).detach();
+
+                send.send(ProducerRequest::new("http://127.0.0.1:8000", vec![], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })).await;
+                evrecv.recv().await;
+
+                smol::Timer::after(std::time::Duration::from_secs(1)).await;
+
+                Result::<()>::Ok(())
+            }.boxed().fuse();
+	    futures::select! {
+		_ = server => {}
+		_ = test => {}
+	    }
+        });
+
+    }
+
+
+const RESPONSE: &[u8] = br#"
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 47
+
+<!DOCTYPE html><html><body>Hello!</body></html>
+"#;
+
+
+    async fn server_mock() -> Result<()> {
+
+        let http = Async::<TcpListener>::bind("127.0.0.1:8000")?;
+       // let https = (Async::<TcpListener>::bind("127.0.0.1:8001")?, Some(tls));
+/*
+	
+	match &tls {
+	    None => println!("Listening on http://{}", listener.get_ref().local_addr()?),
+	    Some(_) => println!("Listening on https://{}", listener.get_ref().local_addr()?),
+	}
+*/
+
+	let acceptor = async {
+	    loop {
+		// Accept the next connection.
+		let (mut stream, _) = http.accept().await.unwrap();
+//		let tls = tls.clone();
+
+		// Spawn a background task serving this connection.
+		Task::spawn(async move {
+                    let mut buffer = vec![0u8;1_000_000];
+                    loop {
+                        info!("Server sending response");
+                        stream.read(&mut buffer).await.unwrap();
+                        stream.write_all(RESPONSE).await.unwrap();
+                    }
+		})
+		.detach();
+	    }
+	};
+
+        acceptor.await;
+        Ok(())
+    }
+}
+
