@@ -25,11 +25,11 @@ impl Default for RequestConfig {
 
 impl ProducerRequest {
     pub fn new(addr: &str, user_headers: Vec<String>, config: RequestConfig) -> Self {
-        return ProducerRequest{
+        ProducerRequest{
             addr: addr.to_string(),
             config,
             headers: user_headers
-        };
+        }
     }
     pub fn redirect(&mut self, addr: &str) {
        self.addr = addr.to_owned();
@@ -55,10 +55,8 @@ impl ProducerRequest {
         self.headers.iter().for_each(|header| headers.push_str(&format!("{}\r\n",header)));
 
          // Construct a request.
-        let req = format!(
-            "GET {}{} HTTP/1.1\r\n{}\r\n",
-            path, query, headers);
-        return req;
+        format!("GET {}{} HTTP/1.1\r\n{}\r\n",
+            path, query, headers)
     }
 
 }
@@ -69,7 +67,7 @@ fn caseless_find<T: AsRef<str>>(haystack: &[T], needle: &str) -> bool {
             return true;
         }
     }
-    return false;
+    false
 }
 
 
@@ -78,9 +76,9 @@ mod tests {
     use super::*;
     #[test]
     fn test_caseless_find() {
-        assert!(caseless_find(&["hOsT: one"], "Host:"));	
-        assert!(!caseless_find(&["hOsTo: one"], "Host:"));	
-        assert!(caseless_find(&["User-AGENT: one"], "User-Agent:"));	
+        assert!(caseless_find(&["hOsT: one"], "Host:"));
+        assert!(!caseless_find(&["hOsTo: one"], "Host:"));
+        assert!(caseless_find(&["User-AGENT: one"], "User-Agent:"));
     }
 
     #[test]

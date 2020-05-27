@@ -26,12 +26,12 @@ pub struct ParseContext {
 
 impl ParseContext {
     fn new(size: usize) -> Self {
-        return ParseContext {
+        ParseContext {
             bytes: vec![0;size],
             read_idx: 0,
             write_idx: 0,
             response: None
-        };
+        }
     }
 }
 
@@ -72,7 +72,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
     });
     buffer.read_idx = parsed.unwrap();
     buffer.write_idx = read_amount;
-    return Ok(buffer);
+    Ok(buffer)
 }
 
 pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: ParseContext) -> Result<()> {
@@ -137,7 +137,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
         }
     }
 
-    return Ok(());
+    Ok(())
 }
 
 #[cfg(test)]

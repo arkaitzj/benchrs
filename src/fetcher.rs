@@ -124,15 +124,13 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
             request.redirect(&redirect_to);
             status = Status::Redirect;
         }
-        if resp.headers.contains_key("Connection") {
-            if resp.headers["Connection"] == "close" {
-                status = Status::CloseConnection;
-            }
+        if resp.headers.contains_key("Connection") && resp.headers["Connection"] == "close" {
+            status = Status::CloseConnection;
         }
     }
     parser::drop_body(stream, ctx).await?;
     trace!("Body dropped!");
-    return Ok(status);
+    Ok(status)
 }
 
 #[cfg(test)]
