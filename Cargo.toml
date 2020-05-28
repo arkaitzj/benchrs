@@ -23,5 +23,8 @@ log = "^0.4.8"
 simplelog = "^0.8.0"
 
 
+[dev-dependencies]
+flate2 = "1.0"
+
 [profile.release]
 lto = true

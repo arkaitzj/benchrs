@@ -113,7 +113,7 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
     stream.write_all(req.as_bytes()).await?;
-    let ctx = parser::read_header(stream).await.context("Header Parsing").unwrap();
+    let ctx = parser::read_header(stream).await.context("Request Header Parsing").unwrap();
     trace!("Response header: \n{}", from_utf8(&ctx.bytes[0..ctx.read_idx])?);
 
     let mut status = Status::Continue;
@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use smol::Task;
-    use simplelog::*;
+//    use simplelog::*;
     use crate::producer::*;
     use async_native_tls::{Identity, TlsAcceptor};
 	
@@ -168,8 +168,9 @@ mod tests {
                 keepalive: true,
                 ..RequestConfig::default()
             })).await;
-            info!("{:?}", evrecv.recv().await.unwrap());
-            info!("{:?}", evrecv.recv().await.unwrap());
+            assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
+            info!("Connected");
+            assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
             send.send(ProducerRequest::new(&addr, vec![], RequestConfig{
                 keepalive: true,
                 ..RequestConfig::default()
@@ -180,13 +181,13 @@ mod tests {
 
     }
 
-    const RESPONSE: &[u8] = br#"
-    HTTP/1.1 200 OK
-    Content-Type: text/html
-    Content-Length: 47
+const RESPONSE: &[u8] = br#"
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 47
 
-    <!DOCTYPE html><html><body>Hello!</body></html>
-    "#;
+<!DOCTYPE html><html><body>Hello!</body></html>
+"#;
 
     #[derive(Clone)]
     enum ServerControl {
@@ -237,7 +238,6 @@ mod tests {
         .detach();
 
     }
-    
 
     async fn server_mock(responses: Vec<ServerControl>) -> Result<()> {
 

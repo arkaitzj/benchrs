@@ -96,40 +96,65 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
         trace!("Transfer encoding");
         let transfer_encoding = transfer_encoding.1;
         assert_eq!(transfer_encoding,"chunked");
-        let body_read = *read_amount - *parsed_len;
-        if body_read < 16 {
-            debug!("Not enough body to read chunk header");
-            stream.read_exact(&mut buffer[*read_amount..*read_amount+16]).await?;
-        }
         let mut chunk_header_start = *parsed_len;
         loop {
-            trace!("First bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_start+4]).unwrap());
-            let chunk_header_pos = &buffer[chunk_header_start..].iter().position(|x| x == &b'\r').unwrap();
-            let chunk_header_end = chunk_header_start + chunk_header_pos;
+            // We need at least 3 bytes to read last chunk
+            if chunk_header_start + 3 > *read_amount {
+                ensure_space(*read_amount + 1024, &mut buffer);
+                *read_amount += stream.read(&mut buffer[*read_amount..]).await?;
+                continue;
+            }
+            if &buffer[chunk_header_start] == &b'0' {
+                trace!("Last chunk found");
+                break;
+            }
 
+            trace!("First bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_start+4]).unwrap());
+            // We need to find the first '\r'
+            let chunk_header_end = match &buffer[chunk_header_start..].iter().position(|x| x == &b'\r') {
+                Some(position) => chunk_header_start + *position,
+                None => {
+                    if (*read_amount - chunk_header_start) > 16 {
+                        panic!("More than 16 bytes read and no trace of '\r'");
+                    } else {
+                        ensure_space(*read_amount+1024, &mut buffer);
+                        *read_amount += stream.read(&mut buffer[*read_amount..]).await?;
+                        continue;
+                    }
+                }
+            };
+
+            trace!("Header bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap());
+
+            if chunk_header_start >=1 {
+                assert_eq!(&buffer[chunk_header_start-2], &b'\r');
+                assert_eq!(&buffer[chunk_header_start-1], &b'\n');
+            }
             assert_eq!(&buffer[chunk_header_end], &b'\r');
             assert_eq!(&buffer[chunk_header_end+1], &b'\n');
             let chunk_size_str = std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap().to_owned();
             let chunk_size = usize::from_str_radix(&chunk_size_str, 16).context("Chunk size not in hex")?;
-            if chunk_size == 0 {
-                trace!("Last chunk ingested");
-                break;
-            }
 
+            assert!(*read_amount > (chunk_header_end+1), "Read {} and chunk ended at {}", *read_amount, chunk_header_end);
             let left_in_buffer = *read_amount - (chunk_header_end+1);
             trace!("New chunk size is {} we have {} left in buffer", chunk_size, left_in_buffer);
-            let chunk_size = chunk_size + 3; // \r\n closes the chunk
-            let left_to_read = chunk_size - left_in_buffer;
+            let chunk_size = chunk_size + 2; // \r\n closes the chunk
+            let left_to_read = chunk_size - min(chunk_size,left_in_buffer);
             trace!("{} left to read ", left_to_read);
+            if left_to_read == 0 {
+                let next_header = chunk_header_end+2+chunk_size;
+                chunk_header_start = next_header;
+                continue;
+            }
 
             let to_read = left_to_read;
             if left_to_read > buffer.len() {
-                buffer.resize(to_read + 1024, 0);
+                buffer.resize(left_to_read, 0);
             }
 
             trace!("Reading: {}", to_read);
             stream.read_exact(&mut buffer[0..to_read]).await?;
-            chunk_header_start = left_to_read;
+            chunk_header_start = left_to_read+1; // 1 byte after the previous chunk ends
             *read_amount = to_read;
             let extra_amount = stream.read(&mut buffer[to_read..]).await?;
             trace!("Extra read was: {}", extra_amount);
@@ -140,14 +165,22 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
     Ok(())
 }
 
+#[inline]
+fn ensure_space<T: Default>(space: usize, buffer: &mut Vec<T>) {
+    if space > buffer.len() {
+        buffer.resize_with(space, Default::default);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    //use simplelog::*;
+//    use simplelog::*;
     use std::pin::Pin;
     use std::task::Poll;
     use std::cmp::min;
-
+    use flate2::read::GzDecoder;
+    use std::io::Read;
 
     struct AsyncBuffer {
         bytes: Vec<u8>,
@@ -187,6 +220,22 @@ Content-Length: 47
             drop_body(&mut stream, ctx).await?;
             Result::<()>::Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn test_parse_chunked() {
+        //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+        let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.chunked.gz"));
+        let mut buffer: Vec<u8> = Vec::new();
+        d.read_to_end(&mut buffer).unwrap();
+        let mut stream = AsyncBuffer::new(buffer);
+
+        smol::run(async {
+            let ctx = read_header(&mut stream).await?;
+            drop_body(&mut stream, ctx).await?;
+            Result::<()>::Ok(())
+        }).unwrap();
+
     }
 }
 

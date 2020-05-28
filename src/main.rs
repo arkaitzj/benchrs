@@ -87,7 +87,7 @@ fn main() -> Result<()> {
 	thread::spawn(|| smol::run(future::pending::<()>()));
     }
 
-    let (s, r) = piper::chan(1000);
+    let (s, r) = piper::chan(100_000);
     let (sender, receiver) = piper::chan(1_000_000);
     let producer = Task::spawn({
         let addr = addr.to_owned();
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
             for _ in 0..n {
 	        futures::select! {
                     _ = s.send(req.clone()).fuse() => {},
-                    _ = smol::Timer::after(Duration::from_secs(5)).fuse() => {
+                    _ = smol::Timer::after(Duration::from_secs(10)).fuse() => {
                         error!("Producer stopped after waiting with a full queue");
                         break;
                     }
@@ -119,7 +119,7 @@ fn main() -> Result<()> {
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
             if !failures.is_empty() {
-                error!("{} fetchers failed and {} succeeded", failures.len(), successes.len());
+                error!("{} fetchers failed and {} succeeded:\n{:?}\n...", failures.len(), successes.len(), failures[0]);
             }
     }});
 
