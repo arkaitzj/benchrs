@@ -81,8 +81,9 @@ fn main() -> Result<()> {
     } else {
         vec![]
     };
-
-    let _ = SimpleLogger::init(log_level, Config::default());
+    let mut config_builder = ConfigBuilder::new();
+    config_builder.set_time_format("%H:%M:%S%.3f".to_string());
+    let _ = SimpleLogger::init(log_level, config_builder.build());
 
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     info!("Spawning {} threads", num_threads);
@@ -95,10 +96,12 @@ fn main() -> Result<()> {
     let producer = Task::spawn({
         let addr = addr.to_owned();
         async move {
+            smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
             let req = ProducerRequest::new(&addr, &method, user_headers, RequestConfig{
                 keepalive,
                 ..RequestConfig::default()
             })?;
+            debug!("Producer starting..");
             for _ in 0..nrequests {
 	        futures::select! {
                     _ = s.send(req.clone()).fuse() => {},
@@ -117,7 +120,7 @@ fn main() -> Result<()> {
         async move {
             let mut all_futs = Vec::new();
             for i in 0..concurrency {
-                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), keepalive, None));
+                all_futs.push(fetch(r.clone(), i, sender.clone(), keepalive, None));
             }
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());

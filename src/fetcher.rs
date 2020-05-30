@@ -61,7 +61,7 @@ async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
 
 }
 
-pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: usize, event_sink: piper::Sender<Event>, keepalive: bool, cert: Option<Certificate>) -> Result<()> {
+pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_sink: piper::Sender<Event>, keepalive: bool, cert: Option<Certificate>) -> Result<()> {
     trace!("Fetch!");
 
     let mut req_handled = 0;
@@ -72,11 +72,10 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
 
         while !finished {
             req_handled += 1;
-            debug!("[{}] handling: {}, queue size: {}", id, req_handled, producer.len());
             if conn.is_disconnected() || ! keepalive {
                 let conn_start = Instant::now();
                 let conn_time = conn_start.elapsed();
-                conn = connect(addr, &cert).await.context("Connecting")?;
+                conn = connect(&request.addr, &cert).await.context("Connecting")?;
                 let conn_ready = conn_start.elapsed();
                 event_sink.send(Event::Connection{id, conn_time, tls_time: None, conn_ready}).await;
             }
@@ -109,7 +108,6 @@ pub async fn fetch(addr: &str, producer: piper::Receiver<ProducerRequest>, id: u
             }
             event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
         }
-        req_handled += 1;
         debug!("[{}] handled: {}, queue size: {}", id, req_handled, producer.len());
 
     }
@@ -203,7 +201,7 @@ Content-Length: 47
                 info!("Spawning test");
 
                 let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
-                let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
+                let fetcher = fetch(recv, 0, evsend, true, Some(cert));
                 Task::local(async move {
                     info!("Fetcher running!");
                     fetcher.await.unwrap();
@@ -240,7 +238,7 @@ Content-Length: 47
                 info!("Spawning test");
 
                 let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
-                let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
+                let fetcher = fetch(recv, 0, evsend, true, Some(cert));
                 Task::local(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
 
                 send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
@@ -277,10 +275,9 @@ Content-Length: 47
                 info!("Spawning test");
                 Task::spawn({
                     info!("Spawned fetcher!");
-                    let addr = addr.clone();
                     async move {
                       info!("Fetcher running");
-                      let res = fetch(&addr, recv, 0, evsend, true, None).await.context("Fetcher failure");
+                      let res = fetch(recv, 0, evsend, true, None).await.context("Fetcher failure");
                       info!("Res is {:?}", res);
 
                 }}).detach();
@@ -323,10 +320,9 @@ Content-Length: 47
                 info!("Spawning test");
                 Task::spawn({
                     info!("Spawned fetcher!");
-                    let addr = addr.clone();
                     async move {
                       info!("Fetcher running");
-                      let res = fetch(&addr, recv, 0, evsend, true, None).await.context("Fetcher failure");
+                      let res = fetch(recv, 0, evsend, true, None).await.context("Fetcher failure");
                       info!("Res is {:?}", res);
 
                 }}).detach();
@@ -349,18 +345,11 @@ Content-Length: 47
 
     }
 
-
-
-
-
-
     #[derive(Clone)]
     enum ServerControl {
         Serve(String),
         CloseConnection
     }
-
-
 
     async fn serve<T: 'static + AsyncRead + AsyncWrite + Unpin + std::marker::Send>(mut stream: T, responses: Vec<ServerControl>) {
         // Spawn a background task serving this connection.
