@@ -6,6 +6,7 @@ use anyhow::{Result, Context};
 #[derive(Clone)]
 pub struct ProducerRequest {
     config: RequestConfig,
+    pub addr: String,
     host: String,
     path: String,
     pub method: String,
@@ -32,6 +33,7 @@ impl ProducerRequest {
         let (host,path) = url_to_hostpath(addr).context("Converting url to host and path")?;
 
         Ok(ProducerRequest{
+            addr: addr.to_string(),
             path,
             host,
             method: method.to_owned(),
@@ -41,6 +43,7 @@ impl ProducerRequest {
     }
     pub fn redirect(&mut self, addr: &str) -> Result<()>{
         let (host,path) = url_to_hostpath(addr)?;
+        self.addr = addr.to_string();
         self.host = host;
         self.path = path;
         // Ensure we do not override Host header with user supplied host
