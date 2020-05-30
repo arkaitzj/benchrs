@@ -176,12 +176,13 @@ fn ensure_space<T: Default>(space: usize, buffer: &mut Vec<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-//    use simplelog::*;
+    use simplelog::*;
     use std::pin::Pin;
     use std::task::Poll;
     use std::cmp::min;
     use flate2::read::GzDecoder;
     use std::io::Read;
+    use galvanic_test::test_suite;
 
     struct AsyncBuffer {
         bytes: Vec<u8>,
@@ -213,31 +214,42 @@ Content-Length: 47
 
 <!DOCTYPE html><html><body>Hello!</body></html>"#;
 
-    #[test]
-    fn test_parse() {
-        //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
-        let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
-        smol::run(async {
-            let ctx = read_header(&mut stream).await?;
-            drop_body(&mut stream, ctx).await?;
-            Result::<()>::Ok(())
-        }).unwrap();
-    }
+    test_suite!{
+        name parser;
 
-    #[test]
-    fn test_parse_chunked() {
-        //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
-        let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.chunked.gz"));
-        let mut buffer: Vec<u8> = Vec::new();
-        d.read_to_end(&mut buffer).unwrap();
-        let mut stream = AsyncBuffer::new(buffer);
+        use super::*;
 
-        smol::run(async {
-            let ctx = read_header(&mut stream).await?;
-            drop_body(&mut stream, ctx).await?;
-            Result::<()>::Ok(())
-        }).unwrap();
+        fixture base() -> (){
+            setup(&mut self) {
+                let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
+                let _ = SimpleLogger::init(log::LevelFilter::Warn, config);
+            }
+        }
 
-    }
+        test test_parse() {
+            //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+            let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
+            smol::run(async {
+                let ctx = read_header(&mut stream).await?;
+                drop_body(&mut stream, ctx).await?;
+                Result::<()>::Ok(())
+            }).unwrap();
+        }
+
+        test test_parse_chunked() {
+            //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+            let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.chunked.gz"));
+            let mut buffer: Vec<u8> = Vec::new();
+            d.read_to_end(&mut buffer).unwrap();
+            let mut stream = AsyncBuffer::new(buffer);
+
+            smol::run(async {
+                let ctx = read_header(&mut stream).await?;
+                drop_body(&mut stream, ctx).await?;
+                Result::<()>::Ok(())
+            }).unwrap();
+
+        }
+}
 }
 
