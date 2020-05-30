@@ -162,6 +162,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use flate2::read::GzDecoder;
     use std::io::Read;
+    use galvanic_test::test_suite;
 
 
 
@@ -173,174 +174,183 @@ Content-Length: 47
 <!DOCTYPE html><html><body>Hello!</body></html>
 "#;
 
+    test_suite!{
+        name fetcher;
 
-    #[test]
-    fn https_fetch() {
-        //let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
-        //let _ = SimpleLogger::init(log::LevelFilter::Trace, config);
-    	let (send,recv) = piper::chan(100);
-	    let (evsend, evrecv) = piper::chan(100);
+        use super::*;
 
-        smol::run(async {
-            let responses = [
-                ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
-                ServerControl::CloseConnection
-            ];
-            let addr = "https://127.0.0.1:8001";
-            server_mock(&addr, responses.to_vec()).await?;
+        fixture base() -> (){
+            setup(&mut self) {
+                let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
+                let _ = SimpleLogger::init(log::LevelFilter::Warn, config);
+            }
+        }
 
-            info!("Spawning test");
 
-            let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
-            let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
-            Task::local(async move {
-                info!("Fetcher running!");
-                fetcher.await.unwrap();
-            }).detach();
+        test https_fetch(base) {
 
-            send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
-                keepalive: true,
-                ..RequestConfig::default()
-            })?).await;
-            assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
-            info!("Connected");
-            assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-            send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
-                keepalive: true,
-                ..RequestConfig::default()
-            })?).await;
-            drop(send);
-            Result::<()>::Ok(())
-        }).unwrap();
+            let (send,recv) = piper::chan(100);
+            let (evsend, evrecv) = piper::chan(100);
+
+            smol::run(async {
+                let responses = [
+                    ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
+                    ServerControl::CloseConnection
+                ];
+                let addr = "https://127.0.0.1:8001";
+                server_mock(&addr, responses.to_vec()).await?;
+
+                info!("Spawning test");
+
+                let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
+                let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
+                Task::local(async move {
+                    info!("Fetcher running!");
+                    fetcher.await.unwrap();
+                }).detach();
+
+                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
+                info!("Connected");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                drop(send);
+                Result::<()>::Ok(())
+            }).unwrap();
+        }
+
+        test http_fetch(base) {
+            let (send,recv) = piper::chan(100);
+            let (evsend, evrecv) = piper::chan(100);
+
+            smol::run(async {
+                let responses = [
+                    ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
+                    ServerControl::CloseConnection
+                ];
+                let addr = "http://127.0.0.1:8000";
+                server_mock(&addr, responses.to_vec()).await.context("Server mock failure")?;
+
+                info!("Spawning test");
+
+                let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
+                let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
+                Task::local(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
+
+                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
+                info!("Connected");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                drop(send);
+                info!("Test finished!");
+                Result::<()>::Ok(())
+            }).unwrap();
+        }
+
+        test response_fetch(base) {
+            let (send,recv) = piper::chan(100);
+            let (evsend, evrecv) = piper::chan(100);
+
+            let temp_file = mktemp::Temp::new_path();
+            let temp_file = temp_file.release(); // See todo below
+            smol::run(async {
+                let responses = [
+                    ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
+                    ServerControl::CloseConnection
+                ];
+                let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
+                server_mock(&addr,responses.to_vec()).await?;
+
+                info!("Spawning test");
+                Task::spawn({
+                    info!("Spawned fetcher!");
+                    let addr = addr.clone();
+                    async move {
+                      info!("Fetcher running");
+                      let res = fetch(&addr, recv, 0, evsend, true, None).await.context("Fetcher failure");
+                      info!("Res is {:?}", res);
+
+                }}).detach();
+                info!("Spawned!");
+                send.send(ProducerRequest::new(&addr, "HEAD", vec!["Host: localhost".to_string()], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                info!("Receiving...");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
+                info!("Connected");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                drop(send);
+                info!("About to send OK back!");
+                Result::<()>::Ok(())
+            }).unwrap();
+            // TODO: Remove when mktemp deletes unix sockets too as well as the temp_file.release() above
+            std::fs::remove_file(temp_file.to_str().unwrap()).unwrap();
+        }
+
+        test response_fetch_head(base) {
+           // let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
+            let (send,recv) = piper::chan(100);
+            let (evsend, evrecv) = piper::chan(100);
+
+            let temp_file = mktemp::Temp::new_path();
+            let temp_file = temp_file.release(); // See todo below
+            smol::run(async {
+                let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.head.gz"));
+                let mut buffer: Vec<u8> = Vec::new();
+                d.read_to_end(&mut buffer).unwrap();
+
+                let responses = [
+                    ServerControl::Serve(from_utf8(&buffer).unwrap().to_string()),
+                    ServerControl::CloseConnection
+                ];
+                let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
+                server_mock(&addr,responses.to_vec()).await?;
+
+                info!("Spawning test");
+                Task::spawn({
+                    info!("Spawned fetcher!");
+                    let addr = addr.clone();
+                    async move {
+                      info!("Fetcher running");
+                      let res = fetch(&addr, recv, 0, evsend, true, None).await.context("Fetcher failure");
+                      info!("Res is {:?}", res);
+
+                }}).detach();
+                info!("Spawned!");
+                send.send(ProducerRequest::new(&addr, "HEAD", vec!["Host: localhost".to_string()], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                info!("Receiving...");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
+                info!("Connected");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                drop(send);
+                info!("About to send OK back!");
+                Result::<()>::Ok(())
+            }).unwrap();
+            // TODO: Remove when mktemp deletes unix sockets too as well as the temp_file.release() above
+            std::fs::remove_file(temp_file.to_str().unwrap()).unwrap();
+        }
+
     }
 
-    #[test]
-    fn http_fetch() {
-        //let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
-        //let _ = SimpleLogger::init(log::LevelFilter::Trace, config);
-    	let (send,recv) = piper::chan(100);
-	    let (evsend, evrecv) = piper::chan(100);
 
-        smol::run(async {
-            let responses = [
-                ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
-                ServerControl::CloseConnection
-            ];
-            let addr = "http://127.0.0.1:8000";
-            server_mock(&addr, responses.to_vec()).await.context("Server mock failure")?;
 
-            info!("Spawning test");
-
-            let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
-            let fetcher = fetch(&addr, recv, 0, evsend, true, Some(cert));
-            Task::local(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
-
-            send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
-                keepalive: true,
-                ..RequestConfig::default()
-            })?).await;
-            assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
-            info!("Connected");
-            assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-            send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
-                keepalive: true,
-                ..RequestConfig::default()
-            })?).await;
-            drop(send);
-            info!("Test finished!");
-            Result::<()>::Ok(())
-        }).unwrap();
-    }
-
-    #[test]
-    fn response_fetch() {
-        //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
-	    let (send,recv) = piper::chan(100);
-	    let (evsend, evrecv) = piper::chan(100);
-
-        let temp_file = mktemp::Temp::new_path();
-        let temp_file = temp_file.release(); // See todo below
-        smol::run(async {
-            let responses = [
-                ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
-                ServerControl::CloseConnection
-            ];
-            let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
-            server_mock(&addr,responses.to_vec()).await?;
-
-            info!("Spawning test");
-            Task::spawn({
-                info!("Spawned fetcher!");
-                let addr = addr.clone();
-                async move {
-                  info!("Fetcher running");
-                  let res = fetch(&addr, recv, 0, evsend, true, None).await.context("Fetcher failure");
-                  info!("Res is {:?}", res);
-
-            }}).detach();
-            info!("Spawned!");
-            send.send(ProducerRequest::new(&addr, "HEAD", vec!["Host: localhost".to_string()], RequestConfig{
-                keepalive: true,
-                ..RequestConfig::default()
-            })?).await;
-            info!("Receiving...");
-            assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
-            info!("Connected");
-            assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-            drop(send);
-            info!("About to send OK back!");
-            Result::<()>::Ok(())
-        }).unwrap();
-        // TODO: Remove when mktemp deletes unix sockets too as well as the temp_file.release() above
-        std::fs::remove_file(temp_file.to_str().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn response_fetch_head() {
-        let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
-	    let (send,recv) = piper::chan(100);
-	    let (evsend, evrecv) = piper::chan(100);
-
-        let temp_file = mktemp::Temp::new_path();
-        let temp_file = temp_file.release(); // See todo below
-        smol::run(async {
-            let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.head.gz"));
-            let mut buffer: Vec<u8> = Vec::new();
-            d.read_to_end(&mut buffer).unwrap();
-
-            let responses = [
-                ServerControl::Serve(from_utf8(&buffer).unwrap().to_string()),
-                ServerControl::CloseConnection
-            ];
-            let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
-            server_mock(&addr,responses.to_vec()).await?;
-
-            info!("Spawning test");
-            Task::spawn({
-                info!("Spawned fetcher!");
-                let addr = addr.clone();
-                async move {
-                  info!("Fetcher running");
-                  let res = fetch(&addr, recv, 0, evsend, true, None).await.context("Fetcher failure");
-                  info!("Res is {:?}", res);
-
-            }}).detach();
-            info!("Spawned!");
-            send.send(ProducerRequest::new(&addr, "HEAD", vec!["Host: localhost".to_string()], RequestConfig{
-                keepalive: true,
-                ..RequestConfig::default()
-            })?).await;
-            info!("Receiving...");
-            assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
-            info!("Connected");
-            assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-            drop(send);
-            info!("About to send OK back!");
-            Result::<()>::Ok(())
-        }).unwrap();
-        // TODO: Remove when mktemp deletes unix sockets too as well as the temp_file.release() above
-        std::fs::remove_file(temp_file.to_str().unwrap()).unwrap();
-    }
 
 
 
@@ -422,7 +432,6 @@ Content-Length: 47
             info!("Listener running async!");
             listener.await.context("Server Mock failure").unwrap();
         }).detach();
-        //smol::Timer::after(std::time::Duration::from_millis(1000)).await;
         Ok(())
     }
 }

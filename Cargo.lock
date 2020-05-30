@@ -91,6 +91,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
+ "galvanic-test",
  "httparse",
  "log",
  "mktemp",
@@ -394,6 +395,12 @@ dependencies = [
  "proc-macro-nested",
  "slab",
 ]
+
+[[package]]
+name = "galvanic-test"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e6ec93b2f388dcd1102437036da399ae305e9c6cdd4e213260f5ddb6005907a"
 
 [[package]]
 name = "getrandom"

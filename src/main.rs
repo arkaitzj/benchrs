@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         let addr = addr.to_owned();
         async move {
             let req = ProducerRequest::new(&addr, &method, user_headers, RequestConfig{
-                keepalive: keepalive,
+                keepalive,
                 ..RequestConfig::default()
             })?;
             for _ in 0..nrequests {

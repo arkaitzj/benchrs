@@ -105,7 +105,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
                 *read_amount += stream.read(&mut buffer[*read_amount..]).await?;
                 continue;
             }
-            if &buffer[chunk_header_start] == &b'0' {
+            if buffer[chunk_header_start] == b'0' {
                 trace!("Last chunk found");
                 break;
             }

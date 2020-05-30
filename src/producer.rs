@@ -32,8 +32,8 @@ impl ProducerRequest {
         let (host,path) = url_to_hostpath(addr).context("Converting url to host and path")?;
 
         Ok(ProducerRequest{
-            path: path,
-            host: host,
+            path,
+            host,
             method: method.to_owned(),
             config,
             headers: user_headers
