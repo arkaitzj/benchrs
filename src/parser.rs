@@ -1,6 +1,6 @@
 use log::*;
 use futures::AsyncRead;
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, ensure};
 use futures::prelude::*;
 use std::collections::HashMap;
 use std::str::from_utf8;
@@ -128,15 +128,17 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
             trace!("Header bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap());
 
             if chunk_header_start >=1 {
-                assert_eq!(&buffer[chunk_header_start-2], &b'\r');
-                assert_eq!(&buffer[chunk_header_start-1], &b'\n');
+                ensure!(buffer[chunk_header_start-2] == b'\r' && buffer[chunk_header_start-1] == b'\n',
+                        "Chunk invariant pre does not hold {:?} != '\r\n'", &buffer[chunk_header_start-2..chunk_header_start]);
             }
-            assert_eq!(&buffer[chunk_header_end], &b'\r');
-            assert_eq!(&buffer[chunk_header_end+1], &b'\n');
+            ensure!(buffer[chunk_header_end] == b'\r' && buffer[chunk_header_end+1] == b'\n',
+                    "Chunk invariant post does not hold {:?} != '\r\n'", &buffer[chunk_header_start-2..chunk_header_start]);
+
+
             let chunk_size_str = std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap().to_owned();
             let chunk_size = usize::from_str_radix(&chunk_size_str, 16).context("Chunk size not in hex")?;
 
-            assert!(*read_amount > (chunk_header_end+1), "Read {} and chunk ended at {}", *read_amount, chunk_header_end);
+            ensure!(*read_amount > (chunk_header_end+1), "Read {} and chunk ended at {}", *read_amount, chunk_header_end);
             let left_in_buffer = *read_amount - (chunk_header_end+1);
             trace!("New chunk size is {} we have {} left in buffer", chunk_size, left_in_buffer);
             let chunk_size = chunk_size + 2; // \r\n closes the chunk
