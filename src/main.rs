@@ -26,8 +26,6 @@ pub enum Event {
     }
 }
 
-
-
 fn main() -> Result<()> {
 
     // Same number of threads as there are CPU cores.
@@ -56,18 +54,23 @@ fn main() -> Result<()> {
                               .help("Sets a custom header")
                               .short("H")
                               .takes_value(true))
+                          .arg(clap::Arg::with_name("method")
+                              .help("Request method: default GET")
+                              .short("m")
+                              .takes_value(true))
                           .arg(clap::Arg::with_name("concurrency")
                               .help("Sets the concurrency level")
                               .short("c")
                               .takes_value(true)
                               .validator(|x| x.parse::<usize>().map(|_|()).map_err(|err|format!("Err is: {:?}", err))))
 			  .get_matches();
-    let n = matches.value_of("request number").map_or(1,|x| x.parse::<usize>().unwrap());
-    let c = matches.value_of("concurrency").map_or(1,|x| x.parse::<usize>().unwrap());
-    let k = matches.is_present("keepalive");
+    let nrequests = matches.value_of("request number").map_or(1,|x| x.parse::<usize>().unwrap());
+    let concurrency = matches.value_of("concurrency").map_or(1,|x| x.parse::<usize>().unwrap());
+    let keepalive = matches.is_present("keepalive");
+    let method = matches.value_of("method").unwrap_or("GET").to_owned();
     let addr = matches.value_of("url").unwrap().to_owned();
 
-    let log_level = match matches.occurrences_of("verbosity") { 
+    let log_level = match matches.occurrences_of("verbosity") {
         0 => LevelFilter::Info,
         1 => LevelFilter::Debug,
         _ => LevelFilter::Trace
@@ -92,12 +95,11 @@ fn main() -> Result<()> {
     let producer = Task::spawn({
         let addr = addr.to_owned();
         async move {
-
-            let req = ProducerRequest::new(&addr, user_headers, RequestConfig{
-                keepalive: k,
+            let req = ProducerRequest::new(&addr, &method, user_headers, RequestConfig{
+                keepalive: keepalive,
                 ..RequestConfig::default()
-            });
-            for _ in 0..n {
+            })?;
+            for _ in 0..nrequests {
 	        futures::select! {
                     _ = s.send(req.clone()).fuse() => {},
                     _ = smol::Timer::after(Duration::from_secs(10)).fuse() => {
@@ -107,14 +109,15 @@ fn main() -> Result<()> {
                 }
             }
             debug!("Producer finalised");
+            Result::<()>::Ok(())
     }});
 
     let executor = Task::spawn({
         let r = r.clone();
         async move {
             let mut all_futs = Vec::new();
-            for i in 0..c {
-                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k, None));
+            for i in 0..concurrency {
+                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), keepalive, None));
             }
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
@@ -133,7 +136,7 @@ fn main() -> Result<()> {
                     Event::Connection{ .. } => {
                         nconnection+=1;
                     },
-                    Event::Request{ request_time, ..} => { 
+                    Event::Request{ request_time, ..} => {
                         requests.push(request_time.as_millis());
                         nrequest+=1;
 
@@ -157,7 +160,7 @@ fn main() -> Result<()> {
 
 
     smol::block_on(async {
-        futures::join!(executor, producer, reporter);
+        futures::join!(executor, producer.unwrap(), reporter);
     });
     Ok(())
 }

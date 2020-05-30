@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::str::from_utf8;
 use std::cmp::min;
 
+
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
@@ -46,7 +47,7 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
 
     let mut parse_errors = 0;
     loop {
-        read_amount += stream.read(&mut buffer.bytes[read_amount..]).await?;
+        read_amount += stream.read(&mut buffer.bytes[read_amount..]).await.context("Reading bytes to complete a Response Header")?;
         if read_amount == 0 {
             return Err(anyhow::Error::msg("Connection closed"));
         }
@@ -89,7 +90,7 @@ pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: 
         while left_to_read > 0 {
             let to_read = std::cmp::min(left_to_read, buffer.len());
             trace!("Discarding {} bytes", to_read);
-            stream.read_exact(&mut buffer[0..to_read]).await?;
+            stream.read_exact(&mut buffer[0..to_read]).await.context("Discarding bytes according to Content-Length")?;
             left_to_read -= to_read;
         }
     } else if let Some(transfer_encoding) = headers.iter().find(|(hname,_)| *hname == "Transfer-Encoding") {
@@ -193,6 +194,7 @@ mod tests {
                 read_ptr: 0
             }
         }
+
     }
 
     impl AsyncRead for AsyncBuffer {
