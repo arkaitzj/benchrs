@@ -21,24 +21,25 @@ impl Response {
 pub struct ParseContext {
     pub bytes: Vec<u8>,
     pub read_idx: usize,
-    pub write_idx: usize,
-    pub response: Option<Response>
+    pub write_idx: usize
 }
 
 impl ParseContext {
-    fn new(size: usize) -> Self {
+    pub fn new(size: usize) -> Self {
         ParseContext {
             bytes: vec![0;size],
             read_idx: 0,
-            write_idx: 0,
-            response: None
+            write_idx: 0
         }
+    }
+    pub fn reset(&mut self) {
+        self.read_idx = 0;
+        self.write_idx = 0;
     }
 }
 
-pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseContext> {
+pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T, buffer: &mut ParseContext) -> Result<Response> {
 
-    let mut buffer = ParseContext::new(10_000);
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut response = httparse::Response::new(&mut headers);
 
@@ -67,18 +68,18 @@ pub async fn read_header<T: AsyncRead + Unpin>(stream: &mut T) -> Result<ParseCo
             break;
         }
     }
-    buffer.response = Some(Response{
+    let response = Response{
         status: response.code.unwrap(),
         headers: headers.iter().filter(|h| **h !=httparse::EMPTY_HEADER).map(|h| (h.name.to_owned(), from_utf8(h.value).unwrap().to_owned())).collect()
-    });
+    };
     buffer.read_idx = parsed.unwrap();
     buffer.write_idx = read_amount;
-    Ok(buffer)
+    Ok(response)
 }
 
-pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, mut parse_context: ParseContext) -> Result<()> {
-    let headers = parse_context.response.unwrap().headers;
-    let mut buffer = parse_context.bytes;
+pub async fn drop_body<T: AsyncRead + Unpin>(stream: &mut T, parse_context:&mut ParseContext, response: &Response) -> Result<()> {
+    let headers = &response.headers;
+    let mut buffer = &mut parse_context.bytes;
     let read_amount = &mut parse_context.write_idx;
     let parsed_len  = &mut parse_context.read_idx;
 
@@ -231,9 +232,10 @@ Content-Length: 47
         test test_parse() {
             //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
             let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
+            let mut ctx = ParseContext::new(10_000);
             smol::run(async {
-                let ctx = read_header(&mut stream).await?;
-                drop_body(&mut stream, ctx).await?;
+                let response = read_header(&mut stream, &mut ctx).await?;
+                drop_body(&mut stream, &mut ctx, &response).await?;
                 Result::<()>::Ok(())
             }).unwrap();
         }
@@ -246,8 +248,9 @@ Content-Length: 47
             let mut stream = AsyncBuffer::new(buffer);
 
             smol::run(async {
-                let ctx = read_header(&mut stream).await?;
-                drop_body(&mut stream, ctx).await?;
+                let mut ctx = ParseContext::new(10_000);
+                let response = read_header(&mut stream, &mut ctx).await?;
+                drop_body(&mut stream, &mut ctx, &response).await?;
                 Result::<()>::Ok(())
             }).unwrap();
 
