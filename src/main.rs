@@ -57,7 +57,8 @@ fn main() -> Result<()> {
                           .arg(clap::Arg::with_name("method")
                               .help("Request method: default GET")
                               .short("m")
-                              .takes_value(true))
+                              .takes_value(true)
+                              .validator(|x| if x.parse::<producer::RequestMethod>().is_ok() {Ok(())} else {Err(format!("{} is an invalid method", x))}))
                           .arg(clap::Arg::with_name("concurrency")
                               .help("Sets the concurrency level")
                               .short("c")
@@ -67,7 +68,7 @@ fn main() -> Result<()> {
     let nrequests = matches.value_of("request number").map_or(1,|x| x.parse::<usize>().unwrap());
     let concurrency = matches.value_of("concurrency").map_or(1,|x| x.parse::<usize>().unwrap());
     let keepalive = matches.is_present("keepalive");
-    let method = matches.value_of("method").unwrap_or("GET").to_owned();
+    let method: producer::RequestMethod = matches.value_of("method").unwrap_or("GET").parse().unwrap();
     let addr = matches.value_of("url").unwrap().to_owned();
 
     let log_level = match matches.occurrences_of("verbosity") {
@@ -97,7 +98,7 @@ fn main() -> Result<()> {
         let addr = addr.to_owned();
         async move {
             smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
-            let req = ProducerRequest::new(&addr, &method, user_headers, RequestConfig{
+            let req = ProducerRequest::new(&addr, method, user_headers, RequestConfig{
                 keepalive,
                 ..RequestConfig::default()
             })?;

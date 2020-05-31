@@ -142,7 +142,7 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
             status = Status::CloseConnection;
         }
     }
-    if request.method != "HEAD" {
+    if request.method != crate::producer::RequestMethod::Head {
         parser::drop_body(stream, ctx).await.context("Body parsing")?;
     }
     trace!("Body dropped!");
@@ -207,14 +207,14 @@ Content-Length: 47
                     fetcher.await.unwrap();
                 }).detach();
 
-                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
                 assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
                 info!("Connected");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -241,14 +241,14 @@ Content-Length: 47
                 let fetcher = fetch(recv, 0, evsend, true, Some(cert));
                 Task::local(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
 
-                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
                 assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
                 info!("Connected");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-                send.send(ProducerRequest::new(&addr, "GET", vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -282,7 +282,7 @@ Content-Length: 47
 
                 }}).detach();
                 info!("Spawned!");
-                send.send(ProducerRequest::new(&addr, "HEAD", vec!["Host: localhost".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -327,7 +327,7 @@ Content-Length: 47
 
                 }}).detach();
                 info!("Spawned!");
-                send.send(ProducerRequest::new(&addr, "HEAD", vec!["Host: localhost".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;

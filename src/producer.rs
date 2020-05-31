@@ -1,7 +1,35 @@
 use url::Url;
 use anyhow::{Result, Context};
 
+#[derive(Copy,Clone,PartialEq)]
+pub enum RequestMethod {
+    Get,
+    Post,
+    Head
+}
 
+impl std::str::FromStr for RequestMethod {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "GET" => Ok(RequestMethod::Get),
+            "POST" => Ok(RequestMethod::Post),
+            "HEAD" => Ok(RequestMethod::Head),
+            _ => Err("Invalid method")
+        }
+    }
+}
+
+impl std::fmt::Display for RequestMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            RequestMethod::Get => "GET",
+            RequestMethod::Post => "POST",
+            RequestMethod::Head => "HEAD"
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct ProducerRequest {
@@ -9,7 +37,7 @@ pub struct ProducerRequest {
     pub addr: String,
     host: String,
     path: String,
-    pub method: String,
+    pub method: RequestMethod,
     headers: Vec<String>
 }
 
@@ -29,14 +57,14 @@ impl Default for RequestConfig {
 
 const LOCALHOST: url::Host<&str> = url::Host::Domain("localhost");
 impl ProducerRequest {
-    pub fn new(addr: &str, method: &str, user_headers: Vec<String>, config: RequestConfig) -> Result<Self> {
+    pub fn new(addr: &str, method: RequestMethod, user_headers: Vec<String>, config: RequestConfig) -> Result<Self> {
         let (host,path) = url_to_hostpath(addr).context("Converting url to host and path")?;
 
         Ok(ProducerRequest{
             addr: addr.to_string(),
             path,
             host,
-            method: method.to_owned(),
+            method: method,
             config,
             headers: user_headers
         })
@@ -104,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_redirect() -> Result<()> {
-        let mut req = ProducerRequest::new("https://www.google.com/", "GET", vec!["User-Agent: test_redirect".to_string()], RequestConfig::default())?;
+        let mut req = ProducerRequest::new("https://www.google.com/", RequestMethod::Get, vec!["User-Agent: test_redirect".to_string()], RequestConfig::default())?;
         let req_str = req.get_request();
         assert!(req_str.contains("Host: www.google.com"), "Could not find the appropriate Host header at: {}", req_str);
         req.redirect("https:///www.yahoo.com")?;
