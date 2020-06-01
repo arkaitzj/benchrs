@@ -1,6 +1,6 @@
 use log::*;
 use futures::AsyncRead;
-use anyhow::{Result, Context, ensure};
+use anyhow::{Result, Context, ensure, anyhow};
 use futures::prelude::*;
 use std::collections::HashMap;
 use std::str::from_utf8;
@@ -37,23 +37,51 @@ impl Parser {
         self.write_idx = 0;
     }
 
+    fn ensure_space(&mut self, space: usize) {
+        while (self.write_idx + space) > self.bytes.len() {
+            self.bytes.resize(self.bytes.len()*2, Default::default());
+        }
+    }
+    fn unparsed(&self) -> &[u8] {
+        return &self.bytes[self.read_idx..self.write_idx];
+    }
+    fn sample(&self, bytes_to_sample: usize) -> &str {
+        let upper = std::cmp::min(bytes_to_sample, self.unparsed().len());
+        return std::str::from_utf8(&self.unparsed()[0..upper]).unwrap();
+    }
+    fn consume(&mut self, amount: usize) {
+        self.read_idx += amount;
+    }
+    async fn read_exact<T: AsyncRead + Unpin>(&mut self, stream: &mut T, amount: usize) -> Result<usize> {
+        self.ensure_space(amount);
+        stream.read_exact(&mut self.bytes[self.write_idx..self.write_idx+amount]).await?;
+        self.write_idx += amount;
+        Ok(amount)
+    }
+
+    async fn read<T: AsyncRead + Unpin>(&mut self, stream: &mut T) -> Result<usize> {
+        let amount = stream.read(&mut self.bytes[self.write_idx..]).await?;
+        if amount == 0 {
+            std::io::Result::Err(std::io::ErrorKind::UnexpectedEof.into())?;
+        }
+        self.write_idx += amount;
+        Ok(amount)
+    }
 
     pub async fn read_header<T: AsyncRead + Unpin>(&mut self, stream: &mut T) -> Result<Response> {
 
         let mut headers = [httparse::EMPTY_HEADER; 32];
         let mut response = httparse::Response::new(&mut headers);
-
-        let mut read_amount = 0;
         let mut parsed;
 
         let mut parse_errors = 0;
         loop {
-            read_amount += stream.read(&mut self.bytes[read_amount..]).await.context("Reading bytes to complete a Response Header")?;
-            if read_amount == 0 {
-                return Err(anyhow::Error::msg("Connection closed"));
-            }
-            let res = response.parse(&self.bytes[0..read_amount]).context(format!("Parsing header: {:?}",from_utf8(&self.bytes[0..read_amount])));
+            trace!("Read header loop");
+            self.read(stream).await.context("Reading bytes to complete a Response Header")?;
+
+            let res = response.parse(self.unparsed()).context(format!("Parsing header: {:?}",self.sample(50)));
             if res.is_err() && parse_errors < 2 {
+                trace!("Failed attempt to read header with {} bytes", self.unparsed().len());
                 headers = [httparse::EMPTY_HEADER; 32];
                 response = httparse::Response::new(&mut headers);
                 parse_errors += 1;
@@ -72,108 +100,72 @@ impl Parser {
             status: response.code.unwrap(),
             headers: headers.iter().filter(|h| **h !=httparse::EMPTY_HEADER).map(|h| (h.name.to_owned(), from_utf8(h.value).unwrap().to_owned())).collect()
         };
-        self.read_idx = parsed.unwrap();
-        self.write_idx = read_amount;
+        self.consume(parsed.unwrap());
         Ok(response)
     }
 
     pub async fn drop_body<T: AsyncRead + Unpin>(&mut self, stream: &mut T, response: &Response) -> Result<()> {
         let headers = &response.headers;
-        let mut buffer = &mut self.bytes;
-        let read_amount = &mut self.write_idx;
-        let parsed_len  = &mut self.read_idx;
-
         if let Some(content_length) = headers.iter().find(|(hname,_)| *hname == "Content-Length") {
             let content_length: usize = content_length.1.parse()?;
-            trace!("Read: {}, parsed: {}, content length: {}", read_amount, parsed_len, content_length);
-            let response_size = content_length + *parsed_len;
-            let mut left_to_read = response_size - min(*read_amount, response_size);
+            trace!("Read: {}, parsed: {}, content length: {}", self.write_idx, self.read_idx, content_length);
+            let response_size = content_length + self.read_idx;
+            let mut left_to_read = response_size - min(self.write_idx, response_size);
             while left_to_read > 0 {
-                let to_read = std::cmp::min(left_to_read, buffer.len());
+                let to_read = std::cmp::min(left_to_read, self.bytes.len());
                 trace!("Discarding {} bytes", to_read);
-                stream.read_exact(&mut buffer[0..to_read]).await.context("Discarding bytes according to Content-Length")?;
+                self.read_exact(stream, to_read).await.context("Discarding bytes according to Content-Length")?;
                 left_to_read -= to_read;
+                self.consume(to_read);
             }
         } else if let Some(transfer_encoding) = headers.iter().find(|(hname,_)| *hname == "Transfer-Encoding") {
             trace!("Transfer encoding");
             let transfer_encoding = transfer_encoding.1;
             assert_eq!(transfer_encoding,"chunked");
-            let mut chunk_header_start = *parsed_len;
-            loop {
-                // We need at least 3 bytes to read last chunk
-                if chunk_header_start + 3 > *read_amount {
-                    ensure_space(*read_amount + 1024, &mut buffer);
-                    *read_amount += stream.read(&mut buffer[*read_amount..]).await?;
-                    continue;
-                }
-                if buffer[chunk_header_start] == b'0' {
-                    trace!("Last chunk found");
-                    break;
-                }
 
-                trace!("First bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_start+4]).unwrap());
-                // We need to find the first '\r'
-                let chunk_header_end = match &buffer[chunk_header_start..].iter().position(|x| x == &b'\r') {
-                    Some(position) => chunk_header_start + *position,
+            loop {
+                let chunk_size = match self.unparsed().iter().position(|x| x == &b'\n') {
                     None => {
-                        if (*read_amount - chunk_header_start) > 16 {
-                            panic!("More than 16 bytes read and no trace of '\r'");
-                        } else {
-                            ensure_space(*read_amount+1024, &mut buffer);
-                            *read_amount += stream.read(&mut buffer[*read_amount..]).await?;
+                        if self.unparsed().len() < 16 {
+                            self.read(stream).await?;
                             continue;
+                        } else {
+                            return Err(anyhow!("No chunk header found on {} bytes", self.unparsed().len()));
                         }
+                    },
+                    Some(position) => {
+                        ensure!( position <= 16, "Missed the header chunk: {}", self.sample(20));
+                        ensure!(self.unparsed()[position-1] == b'\r', "Missing \\r");
+                        trace!("Found \\n in position {} of {}", position, self.sample(10));
+                        let chunk_size_str = std::str::from_utf8(&self.unparsed()[0..(position-1)]).unwrap();
+                        let chunk_size = usize::from_str_radix(chunk_size_str, 16).context("Chunk size not in hex")?;
+                        trace!("Chunk size: [{}] => {}", chunk_size_str, chunk_size);
+                        self.consume(position+1);
+                        chunk_size
                     }
                 };
 
-                trace!("Header bytes look like: [{:?}]", std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap());
-
-                if chunk_header_start >=1 {
-                    ensure!(buffer[chunk_header_start-2] == b'\r' && buffer[chunk_header_start-1] == b'\n',
-                            "Chunk invariant pre does not hold {:?} != '\r\n'", &buffer[chunk_header_start-2..chunk_header_start]);
+                if chunk_size == 0 {
+                    trace!("Last chunk found");
+                    self.consume(2);
+                    break;
                 }
-                ensure!(buffer[chunk_header_end] == b'\r' && buffer[chunk_header_end+1] == b'\n',
-                        "Chunk invariant post does not hold {:?} != '\r\n'", &buffer[chunk_header_start-2..chunk_header_start]);
 
-
-                let chunk_size_str = std::str::from_utf8(&buffer[chunk_header_start..chunk_header_end]).unwrap().to_owned();
-                let chunk_size = usize::from_str_radix(&chunk_size_str, 16).context("Chunk size not in hex")?;
-
-                ensure!(*read_amount > (chunk_header_end+1), "Read {} and chunk ended at {}", *read_amount, chunk_header_end);
-                let left_in_buffer = *read_amount - (chunk_header_end+1);
-                trace!("New chunk size is {} we have {} left in buffer", chunk_size, left_in_buffer);
-                let chunk_size = chunk_size + 2; // \r\n closes the chunk
-                let left_to_read = chunk_size - min(chunk_size,left_in_buffer);
-                trace!("{} left to read ", left_to_read);
-                if left_to_read == 0 {
-                    let next_header = chunk_header_end+2+chunk_size;
-                    chunk_header_start = next_header;
+                if chunk_size+2 <= self.unparsed().len() {
+                    trace!("Full chunk in buffer, consuming..");
+                    self.consume(chunk_size+2);
                     continue;
                 }
 
-                let to_read = left_to_read;
-                if left_to_read > buffer.len() {
-                    buffer.resize(left_to_read, 0);
-                }
-
-                trace!("Reading: {}", to_read);
-                stream.read_exact(&mut buffer[0..to_read]).await?;
-                chunk_header_start = left_to_read+1; // 1 byte after the previous chunk ends
-                *read_amount = to_read;
-                let extra_amount = stream.read(&mut buffer[to_read..]).await?;
-                trace!("Extra read was: {}", extra_amount);
-                *read_amount += extra_amount;
+                let left_to_read = chunk_size+2 - self.unparsed().len();
+                self.consume(self.unparsed().len());
+                trace!("Reading {} to end current chunk: {}", left_to_read, left_to_read + self.unparsed().len());
+                self.read_exact(stream, left_to_read).await?;
+                self.consume(left_to_read)
             }
         }
 
         Ok(())
-    }
-}
-
-#[inline]
-fn ensure_space<T: Default>(space: usize, buffer: &mut Vec<T>) {
-    if space > buffer.len() {
-        buffer.resize_with(space, Default::default);
     }
 }
 
@@ -203,12 +195,12 @@ mod tests {
     }
 
     impl AsyncRead for AsyncBuffer {
-	fn poll_read( mut self: Pin<&mut Self>, _cx: &mut futures::task::Context, buf: &mut [u8])  -> Poll<Result<usize, futures::io::Error>> {
-	    let chunk_size = min(buf.len(), self.bytes.len()-self.read_ptr);
+        fn poll_read( mut self: Pin<&mut Self>, _cx: &mut futures::task::Context, buf: &mut [u8])  -> Poll<Result<usize, futures::io::Error>> {
+            let chunk_size = min(buf.len(), self.bytes.len()-self.read_ptr);
             buf[0..chunk_size].copy_from_slice(&self.bytes[self.read_ptr..self.read_ptr+chunk_size]);
             self.read_ptr += chunk_size;
             return Poll::Ready(Ok(chunk_size))
-	}
+        }
     }
 
 const RESPONSE: &[u8] = br#"
@@ -230,7 +222,7 @@ Content-Length: 47
             }
         }
 
-        test test_parse() {
+        test test_parse(base) {
             //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
             let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
             let mut parser = Parser::new(10_000);
@@ -241,7 +233,7 @@ Content-Length: 47
             }).unwrap();
         }
 
-        test test_parse_chunked() {
+        test test_parse_chunked(base) {
             //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
             let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.chunked.gz"));
             let mut buffer: Vec<u8> = Vec::new();

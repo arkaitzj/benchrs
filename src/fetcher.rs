@@ -73,13 +73,13 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
 
         while !finished {
             req_handled += 1;
+            parser.reset();
             if conn.is_disconnected() || ! keepalive {
                 let conn_start = Instant::now();
                 let conn_time = conn_start.elapsed();
                 conn = connect(&request.addr, &cert).await.context("Connecting")?;
                 let conn_ready = conn_start.elapsed();
                 event_sink.send(Event::Connection{id, conn_time, tls_time: None, conn_ready}).await;
-                parser.reset();
             }
             let request_start = Instant::now();
             let req_result = match conn {
@@ -128,14 +128,14 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
     stream.write_all(req.as_bytes()).await?;
-    let response = parser.read_header(stream).await.context("Request Header Parsing").unwrap();
-    trace!("Response header: \n{}", from_utf8(&parser.bytes[0..parser.read_idx])?);
+    let response = parser.read_header(stream).await.context("Request Header Parsing")?;
+    trace!("Response header({}): \n{}", response.status, from_utf8(&parser.bytes[0..parser.read_idx])?);
 
     let mut status = Status::Continue;
 
     if response.is_redirect() {
-        trace!("Redirecting...");
         let redirect_to = response.headers["Location"].to_owned();
+        trace!("Redirecting to: {}", redirect_to);
         request.redirect(&redirect_to)?;
         status = Status::Redirect;
     }
