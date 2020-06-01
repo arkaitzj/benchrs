@@ -6,7 +6,7 @@ use futures::prelude::*;
 use url::Url;
 use std::time::Instant;
 use smol::Async;
-use crate::parser::{self, ParseContext};
+use crate::parser::Parser;
 use std::str::from_utf8;
 use async_native_tls::Certificate;
 use std::os::unix::net::{UnixStream};
@@ -66,7 +66,7 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
 
     let mut req_handled = 0;
     let mut conn = Connection::Disconnected;
-    let mut parser_context = crate::parser::ParseContext::new(10_000);
+    let mut parser = crate::parser::Parser::new(10_000);
     debug!("Fetcher {} started", id);
     'recv_loop: while let Some(mut request) = producer.recv().await {
         let mut finished = false;
@@ -79,13 +79,13 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
                 conn = connect(&request.addr, &cert).await.context("Connecting")?;
                 let conn_ready = conn_start.elapsed();
                 event_sink.send(Event::Connection{id, conn_time, tls_time: None, conn_ready}).await;
-                parser_context.reset();
+                parser.reset();
             }
             let request_start = Instant::now();
             let req_result = match conn {
-                Connection::Plain{ref mut stream}  => do_request(stream, &mut request, &mut parser_context).await,
-                Connection::Secure{ref mut stream} => do_request(stream, &mut request, &mut parser_context).await,
-                Connection::Unix{ref mut stream} => do_request(stream, &mut request, &mut parser_context).await,
+                Connection::Plain{ref mut stream}  => do_request(stream, &mut request, &mut parser).await,
+                Connection::Secure{ref mut stream} => do_request(stream, &mut request, &mut parser).await,
+                Connection::Unix{ref mut stream} => do_request(stream, &mut request, &mut parser).await,
                 _ => panic!("Disconnected!")
             };
             if let Ok(status) = req_result {
@@ -112,7 +112,7 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
         trace!("[{}] handled: {}, queue size: {}", id, req_handled, producer.len());
 
     }
-    debug!("Fetcher {} finished, handled {} requests, {} bytes  in buffer", id, req_handled, parser_context.bytes.len());
+    debug!("Fetcher {} finished, handled {} requests, {} bytes  in buffer", id, req_handled, parser.bytes.len());
     Ok(())
 }
 
@@ -123,13 +123,13 @@ enum Status{
     Redirect
 }
 
-async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: &mut ProducerRequest, ctx: &mut ParseContext) -> Result<Status> {
+async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: &mut ProducerRequest, parser: &mut Parser) -> Result<Status> {
 
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
     stream.write_all(req.as_bytes()).await?;
-    let response = parser::read_header(stream, ctx).await.context("Request Header Parsing").unwrap();
-    trace!("Response header: \n{}", from_utf8(&ctx.bytes[0..ctx.read_idx])?);
+    let response = parser.read_header(stream).await.context("Request Header Parsing").unwrap();
+    trace!("Response header: \n{}", from_utf8(&parser.bytes[0..parser.read_idx])?);
 
     let mut status = Status::Continue;
 
@@ -143,7 +143,7 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
         status = Status::CloseConnection;
     }
     if request.method != crate::producer::RequestMethod::Head {
-        parser::drop_body(stream, ctx, &response).await.context("Body parsing")?;
+        parser.drop_body(stream, &response).await.context("Body parsing")?;
     }
     trace!("Body dropped!");
     Ok(status)
