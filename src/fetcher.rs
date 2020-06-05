@@ -101,13 +101,13 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
                         finished = true;
                     },
                     Status::CloseConnection => {
-                        trace!("Response closed the connection, disconnecting...");
+                        trace!("[{}]Response closed the connection, disconnecting...", id);
                         conn = Connection::Disconnected;
                         finished = true;
                     }
                 }
             } else {
-                debug!("Error doing request: {:?}", req_result);
+                debug!("[{}]Error doing request: {:?}", id, req_result);
                 conn = Connection::Disconnected;
                 continue 'recv_loop;
             }

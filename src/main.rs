@@ -121,7 +121,7 @@ fn main() -> Result<()> {
         async move {
             let mut all_futs = Vec::new();
             for i in 0..concurrency {
-                all_futs.push(fetch(r.clone(), i, sender.clone(), keepalive, None));
+                all_futs.push(Task::spawn(fetch(r.clone(), i, sender.clone(), keepalive, None)));
             }
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
@@ -129,7 +129,6 @@ fn main() -> Result<()> {
                 error!("{} fetchers failed and {} succeeded:\n{:?}\n...", failures.len(), successes.len(), failures[0]);
             }
     }});
-
     let reporter = Task::spawn(async move {
             let mut nrequest = 0;
             let mut nconnection = 0;
