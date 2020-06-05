@@ -130,8 +130,8 @@ enum Status{
 async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: &mut ProducerRequest, parser: &mut Parser) -> Result<Status> {
 
     let req = request.get_request();
-    trace!("Sending: \n{}", from_utf8(req.as_bytes()).unwrap());
-    stream.write_all(req.as_bytes()).await?;
+    trace!("Sending: \n{}", from_utf8(&req).unwrap());
+    stream.write_all(&req).await?;
     let response = parser.read_header(stream).await.context("Request Header Parsing")?;
     trace!("Response header({}): \n{}", response.status, from_utf8(&parser.bytes[0..parser.read_idx])?);
 
@@ -210,14 +210,14 @@ Content-Length: 47
                     fetcher.await.unwrap();
                 }).detach();
 
-                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
                 assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
                 info!("Connected");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -244,14 +244,14 @@ Content-Length: 47
                 let fetcher = fetch(recv, 0, evsend, true, Some(cert));
                 Task::local(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
 
-                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
                 assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
                 info!("Connected");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
-                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -298,7 +298,7 @@ Content-Length: 47
 
                 }}).detach();
                 info!("Spawned!");
-                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -342,7 +342,7 @@ Content-Length: 47
 
                 }}).detach();
                 info!("Spawned!");
-                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
@@ -391,15 +391,15 @@ Content-Length: 47
 
                 }}).detach();
                 info!("Spawned!");
-                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec!["Host: localhost_1".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec!["Host: localhost_1".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
-                send.send(ProducerRequest::new(&addr, RequestMethod::Post, vec!["Host: localhost_2".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Post, vec!["Host: localhost_2".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;
-                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost_3".to_string()], RequestConfig{
+                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost_3".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
                 })?).await;

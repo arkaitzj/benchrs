@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail,Result};
 use futures::prelude::*;
 use smol::Task;
 use std::thread;
@@ -49,6 +49,10 @@ fn main() -> Result<()> {
                               .short("n")
                               .takes_value(true)
                               .validator(|x| x.parse::<usize>().map(|_|()).map_err(|err|format!("Err is: {:?}", err))))
+                          .arg(clap::Arg::with_name("postfile")
+                              .help("File attach as request body")
+                              .short("p")
+                              .takes_value(true))
                           .arg(clap::Arg::with_name("header")
                               .multiple(true)
                               .help("Sets a custom header")
@@ -70,6 +74,7 @@ fn main() -> Result<()> {
     let keepalive = matches.is_present("keepalive");
     let method: producer::RequestMethod = matches.value_of("method").unwrap_or("GET").parse().unwrap();
     let addr = matches.value_of("url").unwrap().to_owned();
+    let postfile = matches.value_of("postfile");
 
     let log_level = match matches.occurrences_of("verbosity") {
         0 => LevelFilter::Info,
@@ -85,8 +90,20 @@ fn main() -> Result<()> {
     let mut config_builder = ConfigBuilder::new();
     config_builder.set_time_format("%H:%M:%S%.3f".to_string());
     let _ = SimpleLogger::init(log_level, config_builder.build());
-
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+    let mut request_body = None;
+    if let Some(ref postfile) = postfile {
+        if !std::path::Path::new(postfile).is_file() {
+            error!("File <{}> not found", postfile);
+            bail!("File not found");
+        }
+        let mut buffer = vec![];
+        use std::io::Read;
+        std::fs::File::open(postfile).unwrap().read_to_end(&mut buffer).unwrap();
+        request_body = Some(buffer);
+    }
+
     info!("Spawning {} threads", num_threads);
     for _ in 0..num_threads {
 	thread::spawn(|| smol::run(future::pending::<()>()));
@@ -98,7 +115,7 @@ fn main() -> Result<()> {
         let addr = addr.to_owned();
         async move {
             smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
-            let req = ProducerRequest::new(&addr, method, user_headers, RequestConfig{
+            let req = ProducerRequest::new(&addr, method, user_headers, request_body, RequestConfig{
                 keepalive,
                 ..RequestConfig::default()
             })?;

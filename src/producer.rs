@@ -38,7 +38,8 @@ pub struct ProducerRequest {
     host: String,
     path: String,
     pub method: RequestMethod,
-    headers: Vec<String>
+    headers: Vec<String>,
+    body: Option<Vec<u8>>
 }
 
 #[derive(Clone)]
@@ -57,7 +58,7 @@ impl Default for RequestConfig {
 
 const LOCALHOST: url::Host<&str> = url::Host::Domain("localhost");
 impl ProducerRequest {
-    pub fn new(addr: &str, method: RequestMethod, user_headers: Vec<String>, config: RequestConfig) -> Result<Self> {
+    pub fn new(addr: &str, method: RequestMethod, user_headers: Vec<String>, body: Option<Vec<u8>>, config: RequestConfig) -> Result<Self> {
         let (host,path) = url_to_hostpath(addr).context("Converting url to host and path")?;
 
         Ok(ProducerRequest{
@@ -66,6 +67,7 @@ impl ProducerRequest {
             host,
             method: method,
             config,
+            body,
             headers: user_headers
         })
     }
@@ -78,10 +80,11 @@ impl ProducerRequest {
         self.headers.retain(|h| !h.starts_with("Host:") );
         Ok(())
     }
-    pub fn get_request(&self) -> String {
+
+    pub fn get_request(&self) -> Vec<u8> {
 
         let connection = if self.config.keepalive { "keep-alive" } else { "close" };
-
+        let body_len = if let Some(ref body) = self.body { body.len() } else { 0 };
         let mut headers = String::new();
         if ! caseless_find(&self.headers, "Host:")   {
             headers.push_str(&format!("Host: {}\r\n", self.host));
@@ -89,11 +92,20 @@ impl ProducerRequest {
         if ! caseless_find(&self.headers, "Accept:") { headers.push_str(&format!("Accept: {}\r\n", "*/*")); }
         if ! caseless_find(&self.headers, "Connection:") { headers.push_str(&format!("Connection: {}\r\n", connection)); }
         if ! caseless_find(&self.headers, "User-Agent:") { headers.push_str(&format!("User-Agent: {}\r\n", self.config.useragent)); }
+        if body_len > 0 {
+            headers.push_str(&format!("Content-Length: {}\r\n", body_len));
+        }
         self.headers.iter().for_each(|header| headers.push_str(&format!("{}\r\n",header)));
 
          // Construct a request.
-        format!("{} {} HTTP/1.1\r\n{}\r\n",
-            self.method, self.path, headers)
+        let header = format!("{} {} HTTP/1.1\r\n{}\r\n", self.method, self.path, headers);
+        let mut request_buf = Vec::new();
+        request_buf.reserve_exact(header.len() + body_len);
+        request_buf.extend_from_slice(header.as_bytes());
+        if body_len > 0 {
+            request_buf.extend_from_slice(self.body.as_ref().unwrap());
+        }
+        request_buf
     }
 
 }
@@ -132,11 +144,13 @@ mod tests {
 
     #[test]
     fn test_redirect() -> Result<()> {
-        let mut req = ProducerRequest::new("https://www.google.com/", RequestMethod::Get, vec!["User-Agent: test_redirect".to_string()], RequestConfig::default())?;
+        let mut req = ProducerRequest::new("https://www.google.com/", RequestMethod::Get, vec!["User-Agent: test_redirect".to_string()], None, RequestConfig::default())?;
         let req_str = req.get_request();
+        let req_str = std::string::String::from_utf8(req_str).unwrap();
         assert!(req_str.contains("Host: www.google.com"), "Could not find the appropriate Host header at: {}", req_str);
         req.redirect("https:///www.yahoo.com")?;
         let req_str = req.get_request();
+        let req_str = std::string::String::from_utf8(req_str).unwrap();
         assert!(req_str.contains("Host: www.yahoo.com"), "Could not find the appropriate Host header at: {}", req_str);
 
         Ok(())
