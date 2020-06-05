@@ -195,7 +195,7 @@ Content-Length: 47
 
             smol::run(async {
                 let responses = [
-                    ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
+                    ServerControl::Serve(ServeRequest::new(from_utf8(RESPONSE).unwrap().to_string())),
                     ServerControl::CloseConnection
                 ];
                 let addr = "https://127.0.0.1:8001";
@@ -232,7 +232,7 @@ Content-Length: 47
 
             smol::run(async {
                 let responses = [
-                    ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
+                    ServerControl::Serve(ServeRequest::new(from_utf8(RESPONSE).unwrap().to_string())),
                     ServerControl::CloseConnection
                 ];
                 let addr = "http://127.0.0.1:8000";
@@ -282,7 +282,7 @@ Content-Length: 47
             let temp_file = temp_file.release(); // See todo below
             smol::run(async {
                 let responses = [
-                    ServerControl::Serve(from_utf8(RESPONSE).unwrap().to_string()),
+                    ServerControl::Serve(ServeRequest::new(from_utf8(RESPONSE).unwrap().to_string())),
                     ServerControl::CloseConnection
                 ];
                 let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
@@ -315,7 +315,6 @@ Content-Length: 47
         }
 
         test response_fetch_head(base) {
-           // let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
             let (send,recv) = piper::chan(100);
             let (evsend, evrecv) = piper::chan(100);
 
@@ -327,7 +326,7 @@ Content-Length: 47
                 d.read_to_end(&mut buffer).unwrap();
 
                 let responses = [
-                    ServerControl::Serve(from_utf8(&buffer).unwrap().to_string()),
+                    ServerControl::Serve(ServeRequest::new(from_utf8(&buffer).unwrap().to_string())),
                     ServerControl::CloseConnection
                 ];
                 let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
@@ -359,11 +358,96 @@ Content-Length: 47
             std::fs::remove_file(temp_file.to_str().unwrap()).unwrap();
         }
 
+        test methods(base) {
+            let (send,recv) = piper::chan(100);
+            let (evsend, evrecv) = piper::chan(100);
+
+            let temp_file = mktemp::Temp::new_path();
+            let temp_file = temp_file.release(); // See todo below
+            smol::run(async {
+                let r201 = gz_to_string(include_bytes!("../resources/201.created.gz"));
+                let r200 = gz_to_string(include_bytes!("../resources/200.ok.gz"));
+
+
+                let responses = [
+                    ServerControl::Serve(ServeRequest::new(r200.clone())
+                                            .on_request(|request| assert!(request.starts_with("GET"), "Request does not start with GET:\n{}", request))),
+                    ServerControl::Serve(ServeRequest::new(r201)
+                                            .on_request(|request| assert!(request.starts_with("POST"), "Request does not start with POST:\n{}", request))),
+                    ServerControl::Serve(ServeRequest::new(r200)
+                                            .on_request(|request| assert!(request.starts_with("HEAD"), "Request does not start with HEAD:\n{}", request))),
+                    ServerControl::CloseConnection
+                ];
+                let addr = format!("unix://{}", temp_file.to_str().unwrap()).to_owned();
+                server_mock(&addr,responses.to_vec()).await?;
+
+                info!("Spawning test");
+                Task::spawn({
+                    info!("Spawned fetcher!");
+                    async move {
+                      info!("Fetcher running");
+                      let res = fetch(recv, 0, evsend, true, None).await.context("Fetcher failure");
+                      info!("Res is {:?}", res);
+
+                }}).detach();
+                info!("Spawned!");
+                send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec!["Host: localhost_1".to_string()], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                send.send(ProducerRequest::new(&addr, RequestMethod::Post, vec!["Host: localhost_2".to_string()], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost_3".to_string()], RequestConfig{
+                    keepalive: true,
+                    ..RequestConfig::default()
+                })?).await;
+                info!("Receiving...");
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
+                smol::Timer::after(std::time::Duration::from_millis(1)).await;
+                assert!(evrecv.is_empty());
+                drop(send);
+                info!("About to send OK back!");
+                Result::<()>::Ok(())
+            }).unwrap();
+            // TODO: Remove when mktemp deletes unix sockets too as well as the temp_file.release() above
+            std::fs::remove_file(temp_file.to_str().unwrap()).unwrap();
+        }
+
+    }
+
+    fn gz_to_string(bytes: &[u8]) -> String {
+        let mut d: GzDecoder<&[u8]> = GzDecoder::new(bytes);
+        let mut buffer: Vec<u8> = Vec::new();
+        d.read_to_end(&mut buffer).unwrap();
+        std::string::String::from_utf8(buffer).unwrap()
+    }
+
+    #[derive(Clone)]
+    struct ServeRequest{
+        content: String,
+        request_verifier: Option<fn(String)>
+    }
+    impl ServeRequest {
+        fn new(content: String) -> Self {
+            ServeRequest{
+                content,
+                request_verifier: None
+            }
+        }
+        fn on_request(mut self, request_verifier: fn(String)) -> Self {
+            self.request_verifier = Some(request_verifier);
+            self
+        }
     }
 
     #[derive(Clone)]
     enum ServerControl {
-        Serve(String),
+        Serve(ServeRequest),
         CloseConnection
     }
 
@@ -375,8 +459,12 @@ Content-Length: 47
                 match respo {
                     ServerControl::Serve(response) => {
                         info!("Server sending response");
-                        stream.read(&mut buffer).await.unwrap();
-                        stream.write_all(response.as_bytes()).await.unwrap()
+                        let ret = stream.read(&mut buffer).await.unwrap();
+                        info!("Server receiver: {}", ret);
+                        if let Some(verifier) = response.request_verifier {
+                            verifier(from_utf8(&buffer).unwrap().to_string());
+                        }
+                        stream.write_all(response.content.as_bytes()).await.unwrap()
                     },
                     _ =>  {
                         info!("Dropping stream");
