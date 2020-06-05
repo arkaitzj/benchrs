@@ -9,11 +9,13 @@ use smol::Async;
 use crate::parser::Parser;
 use std::str::from_utf8;
 use async_native_tls::Certificate;
+#[cfg(unix)]
 use std::os::unix::net::{UnixStream};
 
 enum Connection {
     Plain{ stream: Async<TcpStream>},
     Secure{ stream: async_native_tls::TlsStream<Async<TcpStream>>},
+    #[cfg(unix)]
     Unix{ stream: Async<UnixStream>},
     Disconnected
 }
@@ -50,6 +52,7 @@ async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
             trace!("TLS negotiated in {}", tls_neg.elapsed().as_millis());
             Ok(Connection::Secure{stream})
         },
+        #[cfg(unix)]
         "unix" => {
             let path = url.path();
             Ok(Connection::Unix{
@@ -85,6 +88,7 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
             let req_result = match conn {
                 Connection::Plain{ref mut stream}  => do_request(stream, &mut request, &mut parser).await,
                 Connection::Secure{ref mut stream} => do_request(stream, &mut request, &mut parser).await,
+                #[cfg(unix)]
                 Connection::Unix{ref mut stream} => do_request(stream, &mut request, &mut parser).await,
                 _ => panic!("Disconnected!")
             };
@@ -157,7 +161,6 @@ mod tests {
     use simplelog::*;
     use crate::producer::*;
     use async_native_tls::{Identity, TlsAcceptor};
-    use std::os::unix::net::UnixListener;
     use flate2::read::GzDecoder;
     use std::io::Read;
     use galvanic_test::test_suite;
@@ -173,7 +176,7 @@ Content-Length: 47
 "#;
 
     test_suite!{
-        name fetcher;
+        name fetcher_generic;
 
         use super::*;
 
@@ -257,7 +260,20 @@ Content-Length: 47
                 Result::<()>::Ok(())
             }).unwrap();
         }
+    }
 
+  #[cfg(unix)]
+  test_suite!{
+        name fetcher_unix;
+
+        use super::*;
+
+        fixture base() -> (){
+            setup(&mut self) {
+                let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
+                let _ = SimpleLogger::init(log::LevelFilter::Warn, config);
+            }
+        }
         test response_fetch(base) {
             let (send,recv) = piper::chan(100);
             let (evsend, evrecv) = piper::chan(100);
@@ -400,7 +416,9 @@ Content-Length: 47
                         serve(stream, responses.clone()).await
                     }
                 },
+                #[cfg(unix)]
                 "unix" => {
+                    use std::os::unix::net::UnixListener;
                     info!("Listening on unix socket: {}", url.path());
                     let listener = Async::<UnixListener>::bind(url.path()).context("Binding error")?;
                     info!("Awaiting for connection!");
