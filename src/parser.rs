@@ -47,7 +47,7 @@ impl Parser {
     }
     fn sample(&self, bytes_to_sample: usize) -> &str {
         let upper = std::cmp::min(bytes_to_sample, self.unparsed().len());
-        return std::str::from_utf8(&self.unparsed()[0..upper]).unwrap();
+        return std::str::from_utf8(&self.unparsed()[0..upper]).unwrap_or("NON-UTF8 DATA SAMPLE");
     }
     fn consume(&mut self, amount: usize) {
         self.read_idx += amount;
@@ -77,7 +77,7 @@ impl Parser {
         let mut parse_errors = 0;
         loop {
             trace!("Read header loop");
-            self.read(stream).await.context(format!("Reading bytes to complete a Response Header: {:?}", self.sample(self.unparsed().len())))?;
+            self.read(stream).await.context(format!("Reading bytes to complete a Response Header: {:?}...", self.sample(self.unparsed().len())))?;
 
             let res = response.parse(self.unparsed()).context(format!("Parsing header: {:?}",self.sample(50)));
             if res.is_err() && parse_errors < 2 {
