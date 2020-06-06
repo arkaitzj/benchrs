@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail,Result};
 use futures::prelude::*;
 use smol::Task;
 use std::thread;
@@ -26,8 +26,6 @@ pub enum Event {
     }
 }
 
-
-
 fn main() -> Result<()> {
 
     // Same number of threads as there are CPU cores.
@@ -51,23 +49,34 @@ fn main() -> Result<()> {
                               .short("n")
                               .takes_value(true)
                               .validator(|x| x.parse::<usize>().map(|_|()).map_err(|err|format!("Err is: {:?}", err))))
+                          .arg(clap::Arg::with_name("postfile")
+                              .help("File attach as request body")
+                              .short("p")
+                              .takes_value(true))
                           .arg(clap::Arg::with_name("header")
                               .multiple(true)
                               .help("Sets a custom header")
                               .short("H")
                               .takes_value(true))
+                          .arg(clap::Arg::with_name("method")
+                              .help("Request method: default GET")
+                              .short("m")
+                              .takes_value(true)
+                              .validator(|x| if x.parse::<producer::RequestMethod>().is_ok() {Ok(())} else {Err(format!("{} is an invalid method", x))}))
                           .arg(clap::Arg::with_name("concurrency")
                               .help("Sets the concurrency level")
                               .short("c")
                               .takes_value(true)
                               .validator(|x| x.parse::<usize>().map(|_|()).map_err(|err|format!("Err is: {:?}", err))))
 			  .get_matches();
-    let n = matches.value_of("request number").map_or(1,|x| x.parse::<usize>().unwrap());
-    let c = matches.value_of("concurrency").map_or(1,|x| x.parse::<usize>().unwrap());
-    let k = matches.is_present("keepalive");
+    let nrequests = matches.value_of("request number").map_or(1,|x| x.parse::<usize>().unwrap());
+    let concurrency = matches.value_of("concurrency").map_or(1,|x| x.parse::<usize>().unwrap());
+    let keepalive = matches.is_present("keepalive");
+    let method: producer::RequestMethod = matches.value_of("method").unwrap_or("GET").parse().unwrap();
     let addr = matches.value_of("url").unwrap().to_owned();
+    let postfile = matches.value_of("postfile");
 
-    let log_level = match matches.occurrences_of("verbosity") { 
+    let log_level = match matches.occurrences_of("verbosity") {
         0 => LevelFilter::Info,
         1 => LevelFilter::Debug,
         _ => LevelFilter::Trace
@@ -78,10 +87,23 @@ fn main() -> Result<()> {
     } else {
         vec![]
     };
-
-    let _ = SimpleLogger::init(log_level, Config::default());
-
+    let mut config_builder = ConfigBuilder::new();
+    config_builder.set_time_format("%H:%M:%S%.3f".to_string());
+    let _ = SimpleLogger::init(log_level, config_builder.build());
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+    let mut request_body = None;
+    if let Some(ref postfile) = postfile {
+        if !std::path::Path::new(postfile).is_file() {
+            error!("File <{}> not found", postfile);
+            bail!("File not found");
+        }
+        let mut buffer = vec![];
+        use std::io::Read;
+        std::fs::File::open(postfile).unwrap().read_to_end(&mut buffer).unwrap();
+        request_body = Some(buffer);
+    }
+
     info!("Spawning {} threads", num_threads);
     for _ in 0..num_threads {
 	thread::spawn(|| smol::run(future::pending::<()>()));
@@ -92,12 +114,13 @@ fn main() -> Result<()> {
     let producer = Task::spawn({
         let addr = addr.to_owned();
         async move {
-
-            let req = ProducerRequest::new(&addr, user_headers, RequestConfig{
-                keepalive: k,
+            smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
+            let req = ProducerRequest::new(&addr, method, user_headers, request_body, RequestConfig{
+                keepalive,
                 ..RequestConfig::default()
-            });
-            for _ in 0..n {
+            })?;
+            debug!("Producer starting..");
+            for _ in 0..nrequests {
 	        futures::select! {
                     _ = s.send(req.clone()).fuse() => {},
                     _ = smol::Timer::after(Duration::from_secs(10)).fuse() => {
@@ -107,14 +130,15 @@ fn main() -> Result<()> {
                 }
             }
             debug!("Producer finalised");
+            Result::<()>::Ok(())
     }});
 
     let executor = Task::spawn({
         let r = r.clone();
         async move {
             let mut all_futs = Vec::new();
-            for i in 0..c {
-                all_futs.push(fetch(&addr, r.clone(), i, sender.clone(), k, None));
+            for i in 0..concurrency {
+                all_futs.push(Task::spawn(fetch(r.clone(), i, sender.clone(), keepalive, None)));
             }
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
@@ -122,7 +146,6 @@ fn main() -> Result<()> {
                 error!("{} fetchers failed and {} succeeded:\n{:?}\n...", failures.len(), successes.len(), failures[0]);
             }
     }});
-
     let reporter = Task::spawn(async move {
             let mut nrequest = 0;
             let mut nconnection = 0;
@@ -133,7 +156,7 @@ fn main() -> Result<()> {
                     Event::Connection{ .. } => {
                         nconnection+=1;
                     },
-                    Event::Request{ request_time, ..} => { 
+                    Event::Request{ request_time, ..} => {
                         requests.push(request_time.as_millis());
                         nrequest+=1;
 
@@ -157,7 +180,7 @@ fn main() -> Result<()> {
 
 
     smol::block_on(async {
-        futures::join!(executor, producer, reporter);
+        futures::join!(executor, producer.unwrap(), reporter);
     });
     Ok(())
 }
