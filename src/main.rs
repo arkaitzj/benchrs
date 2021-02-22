@@ -168,6 +168,11 @@ fn main() -> Result<()> {
             }
             let end = Instant::now();
 
+            if requests.is_empty() {
+                info!("No requests were executed");
+                return;
+            }
+
             let avg = requests.iter().sum::<u128>() as f32 / requests.len() as f32;
             requests.sort();
             let mid = requests.len() / 2;
