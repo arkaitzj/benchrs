@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 smol = "^0.1.10"
-url = "^2.1.1"
+url = "^2.2.1"
 futures = "^0.3.5"
 anyhow = "^1.0.31"
 async-native-tls = "^0.3.3"
