@@ -1,7 +1,7 @@
 # benchrs
 Apache Benchmark style http bench tool written in async rust
 ```
-Benchrs 0.1.7
+Benchrs 0.1.8
 Arkaitz Jimenez <arkaitzj@gmail.com>
 Does http benchmarks
 
