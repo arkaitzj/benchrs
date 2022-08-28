@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use url::Url;
-use std::fmt::Write;
 use std::collections::HashMap;
+use std::fmt::Write;
+use url::Url;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum RequestMethod {
@@ -108,8 +108,8 @@ impl ProducerRequest {
             ("Host:", &*self.host),
             ("Accept:", "*/*"),
             ("Connection:", connection),
-            ("User-Agent:", &*self.config.useragent)
-        ]); 
+            ("User-Agent:", &*self.config.useragent),
+        ]);
         let mut headers = String::new();
         for (key, value) in default_headers {
             if !caseless_find(&self.headers, key) {
@@ -121,7 +121,7 @@ impl ProducerRequest {
         }
         self.headers
             .iter()
-            .for_each(|header| write!(headers, "{}\r\n", header).expect("Infallible") );
+            .for_each(|header| write!(headers, "{}\r\n", header).expect("Infallible"));
 
         // Construct a request.
         let header = format!("{} {} HTTP/1.1\r\n{}\r\n", self.method, self.path, headers);

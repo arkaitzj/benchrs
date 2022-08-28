@@ -125,7 +125,8 @@ fn main() -> Result<()> {
         vec![]
     };
     let mut config_builder = ConfigBuilder::new();
-    config_builder.set_time_format_custom(format_description!("[hour]:[minute]:[second].[subsecond]"));
+    config_builder
+        .set_time_format_custom(format_description!("[hour]:[minute]:[second].[subsecond]"));
     let _ = SimpleLogger::init(log_level, config_builder.build());
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
@@ -152,7 +153,6 @@ fn main() -> Result<()> {
     let (s, r) = piper::chan(100_000);
     let (sender, receiver) = piper::chan(1_000_000);
     let producer = smol::spawn({
-//        let addr = addr.to_owned();
         async move {
             smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
             let req = ProducerRequest::new(
