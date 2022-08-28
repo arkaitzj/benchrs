@@ -42,7 +42,7 @@ impl Parser {
         }
     }
     fn unparsed(&self) -> &[u8] {
-        return &self.bytes[self.read_idx..self.write_idx];
+        &self.bytes[self.read_idx..self.write_idx]
     }
     fn sample(&self, bytes_to_sample: usize) -> &str {
         let upper = std::cmp::min(bytes_to_sample, self.unparsed().len());

@@ -33,10 +33,7 @@ enum Connection {
 
 impl Connection {
     fn is_disconnected(&self) -> bool {
-        match &self {
-            Connection::Disconnected => true,
-            _ => false,
-        }
+        matches!(self, Connection::Disconnected)
     }
 }
 

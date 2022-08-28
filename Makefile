@@ -15,7 +15,10 @@ lint:
 	cargo clippy -- -Dwarnings
 
 format:
-	cargo fmt --ceck
+	cargo fmt
 
-verify: lint format test
+check_format:
+	cargo fmt --check
+
+verify: lint check_format test
 

@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use url::Url;
 use std::fmt::Write;
+use std::collections::HashMap;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum RequestMethod {
     Get,
     Post,
@@ -76,7 +77,7 @@ impl ProducerRequest {
             addr: addr.to_string(),
             path,
             host,
-            method: method,
+            method,
             config,
             body,
             headers: user_headers,
@@ -103,21 +104,20 @@ impl ProducerRequest {
         } else {
             0
         };
+        let default_headers = HashMap::from([
+            ("Host:", &*self.host),
+            ("Accept:", "*/*"),
+            ("Connection:", connection),
+            ("User-Agent:", &*self.config.useragent)
+        ]); 
         let mut headers = String::new();
-        if !caseless_find(&self.headers, "Host:") {
-            headers.push_str(&format!("Host: {}\r\n", self.host));
-        }
-        if !caseless_find(&self.headers, "Accept:") {
-            headers.push_str(&format!("Accept: {}\r\n", "*/*"));
-        }
-        if !caseless_find(&self.headers, "Connection:") {
-            headers.push_str(&format!("Connection: {}\r\n", connection));
-        }
-        if !caseless_find(&self.headers, "User-Agent:") {
-            headers.push_str(&format!("User-Agent: {}\r\n", self.config.useragent));
+        for (key, value) in default_headers {
+            if !caseless_find(&self.headers, key) {
+                write!(headers, "{} {}\r\n", key, value).expect("Infallible")
+            }
         }
         if body_len > 0 {
-            headers.push_str(&format!("Content-Length: {}\r\n", body_len));
+            write!(headers, "Content-Length: {}\r\n", body_len).expect("Infallible")
         }
         self.headers
             .iter()
