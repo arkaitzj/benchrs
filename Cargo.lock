@@ -156,6 +156,7 @@ name = "benchrs"
 version = "0.1.9-alpha.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-native-tls",
  "clap",
  "flate2",
