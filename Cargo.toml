@@ -22,6 +22,7 @@ clap = "3.2.17"
 log = "0.4.17"
 simplelog = "0.12.0"
 time = "0.3.14"
+async-channel = "1.7.1"
 
 
 [dev-dependencies]

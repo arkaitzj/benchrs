@@ -103,9 +103,9 @@ async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
 }
 
 pub async fn fetch(
-    producer: piper::Receiver<ProducerRequest>,
+    producer: async_channel::Receiver<ProducerRequest>,
     id: usize,
-    event_sink: piper::Sender<Event>,
+    event_sink: async_channel::Sender<Event>,
     keepalive: bool,
     cert: Option<Certificate>,
 ) -> Result<()> {
@@ -115,7 +115,7 @@ pub async fn fetch(
     let mut conn = Connection::Disconnected;
     let mut parser = crate::parser::Parser::new(10_000);
     debug!("Fetcher {} started", id);
-    'recv_loop: while let Some(mut request) = producer.recv().await {
+    'recv_loop: while let Ok(mut request) = producer.recv().await {
         let mut finished = false;
 
         while !finished {
@@ -136,7 +136,7 @@ pub async fn fetch(
                         tls_time: None,
                         conn_ready,
                     })
-                    .await;
+                    .await?;
             }
             let request_start = Instant::now();
             let req_result = match conn {
@@ -176,7 +176,7 @@ pub async fn fetch(
                     id,
                     request_time: request_start.elapsed(),
                 })
-                .await;
+                .await?;
         }
         trace!(
             "[{}] handled: {}, queue size: {}",
@@ -278,8 +278,8 @@ Content-Length: 47
 
         test https_fetch(base) {
 
-            let (send,recv) = piper::chan(100);
-            let (evsend, evrecv) = piper::chan(100);
+            let (send,recv) = async_channel::bounded(100);
+            let (evsend, evrecv) = async_channel::bounded(100);
 
             smol::block_on(async {
                 let responses = [
@@ -294,30 +294,31 @@ Content-Length: 47
 
                 let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certs/root-ca.pem"))?;
                 let fetcher = fetch(recv, 0, evsend, true, Some(cert));
-                smol::spawn(async move {
+                let fetcher_task = smol::spawn(async move {
                     info!("Fetcher running!");
-                    fetcher.await.unwrap();
-                }).detach();
+                    fetcher.await
+                });
 
                 send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
                 info!("Connected");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
                 send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 drop(send);
+                fetcher_task.await.context("Waiting for fetcher to finish...")?;
                 Result::<()>::Ok(())
             }).unwrap();
         }
 
         test http_fetch(base) {
-            let (send,recv) = piper::chan(100);
-            let (evsend, evrecv) = piper::chan(100);
+            let (send,recv) = async_channel::bounded(100);
+            let (evsend, evrecv) = async_channel::bounded(100);
 
             smol::block_on(async {
                 let responses = [
@@ -331,19 +332,19 @@ Content-Length: 47
 
                 let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certs/root-ca.pem"))?;
                 let fetcher = fetch(recv, 0, evsend, true, Some(cert));
-                smol::spawn(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
+                smol::spawn(async move { fetcher.await.context("Fetcher failure")}).detach();
 
                 send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 assert!(matches!(evrecv.recv().await.unwrap(),Event::Connection{..}));
                 info!("Connected");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));
                 send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 drop(send);
                 info!("Test finished!");
                 Result::<()>::Ok(())
@@ -364,8 +365,8 @@ Content-Length: 47
             }
         }
         test response_fetch(base) {
-            let (send,recv) = piper::chan(100);
-            let (evsend, evrecv) = piper::chan(100);
+            let (send,recv) = async_channel::bounded(100);
+            let (evsend, evrecv) = async_channel::bounded(100);
 
             let temp_file = mktemp::Temp::new_path();
             let temp_file = temp_file.release(); // See todo below
@@ -390,7 +391,7 @@ Content-Length: 47
                 send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 info!("Receiving...");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
                 info!("Connected");
@@ -404,8 +405,8 @@ Content-Length: 47
         }
 
         test response_fetch_head(base) {
-            let (send,recv) = piper::chan(100);
-            let (evsend, evrecv) = piper::chan(100);
+            let (send,recv) = async_channel::bounded(100);
+            let (evsend, evrecv) = async_channel::bounded(100);
 
             let temp_file = mktemp::Temp::new_path();
             let temp_file = temp_file.release(); // See todo below
@@ -434,7 +435,7 @@ Content-Length: 47
                 send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 info!("Receiving...");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
                 info!("Connected");
@@ -448,8 +449,8 @@ Content-Length: 47
         }
 
         test methods(base) {
-            let (send,recv) = piper::chan(100);
-            let (evsend, evrecv) = piper::chan(100);
+            let (send,recv) = async_channel::bounded(100);
+            let (evsend, evrecv) = async_channel::bounded(100);
 
             let temp_file = mktemp::Temp::new_path();
             let temp_file = temp_file.release(); // See todo below
@@ -483,15 +484,15 @@ Content-Length: 47
                 send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec!["Host: localhost_1".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 send.send(ProducerRequest::new(&addr, RequestMethod::Post, vec!["Host: localhost_2".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 send.send(ProducerRequest::new(&addr, RequestMethod::Head, vec!["Host: localhost_3".to_string()], None, RequestConfig{
                     keepalive: true,
                     ..RequestConfig::default()
-                })?).await;
+                })?).await?;
                 info!("Receiving...");
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Connection{..}));
                 assert!(matches!(evrecv.recv().await.unwrap(), Event::Request{..}));

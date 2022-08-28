@@ -7,6 +7,15 @@ on:
     branches: [ master ]
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: format
+        run: cargo fmt --check
+      - name: lint
+        run: cargo clippy -- -Dwarnings
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -20,6 +29,6 @@ jobs:
         rust-version: ${{ matrix.rust }} 
     - uses: actions/checkout@v2
     - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      run: make build
+    - name: Test
+      run: make test

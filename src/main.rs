@@ -150,8 +150,8 @@ fn main() -> Result<()> {
         thread::spawn(|| smol::block_on(future::pending::<()>()));
     }
 
-    let (s, r) = piper::chan(100_000);
-    let (sender, receiver) = piper::chan(1_000_000);
+    let (s, r) = async_channel::bounded(100_000);
+    let (sender, receiver) = async_channel::bounded(100_000);
     let producer = smol::spawn({
         async move {
             smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
@@ -210,7 +210,7 @@ fn main() -> Result<()> {
         let mut nconnection = 0;
         let start = Instant::now();
         let mut requests = Vec::new();
-        while let Some(ev) = receiver.recv().await {
+        while let Ok(ev) = receiver.recv().await {
             match ev {
                 Event::Connection { .. } => {
                     nconnection += 1;
