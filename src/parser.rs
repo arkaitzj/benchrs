@@ -226,7 +226,7 @@ Content-Length: 47
             //let _ = SimpleLogger::init(log::LevelFilter::Trace, Config::default());
             let mut stream = AsyncBuffer::new(RESPONSE.to_vec());
             let mut parser = Parser::new(10_000);
-            smol::run(async {
+            smol::block_on(async {
                 let response = parser.read_header(&mut stream).await?;
                 parser.drop_body(&mut stream, &response).await?;
                 Result::<()>::Ok(())
@@ -240,7 +240,7 @@ Content-Length: 47
             d.read_to_end(&mut buffer).unwrap();
             let mut stream = AsyncBuffer::new(buffer);
 
-            smol::run(async {
+            smol::block_on(async {
                 let mut parser = Parser::new(10_000);
                 let response = parser.read_header(&mut stream).await?;
                 parser.drop_body(&mut stream, &response).await?;

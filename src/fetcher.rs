@@ -6,11 +6,16 @@ use futures::prelude::*;
 use url::Url;
 use std::time::Instant;
 use smol::Async;
+use smol::Timer;
 use crate::parser::Parser;
 use std::str::from_utf8;
 use async_native_tls::Certificate;
 #[cfg(unix)]
 use std::os::unix::net::{UnixStream};
+use std::time::Duration;
+use std::net::ToSocketAddrs;
+use futures::pin_mut;
+use smol::future::FutureExt;
 
 enum Connection {
     Plain{ stream: Async<TcpStream>},
@@ -29,21 +34,43 @@ impl Connection {
     }
 }
 
+pub async fn open_connection(hostport: &str) -> Result<Async<TcpStream>> {
+
+    let resolved_addrs = hostport.to_socket_addrs()?;
+    debug!("Addresses resolved from {hostport} to {resolved_addrs:?}");
+
+    let connects = stream::iter(resolved_addrs).filter_map(|sockaddr| async move { 
+      trace!("Connection {sockaddr} await....");
+      let stream = Async::<TcpStream>::connect(sockaddr).or(async{
+        Timer::after(Duration::from_millis(100)).await;
+          Err(std::io::ErrorKind::TimedOut.into())
+        }).await.ok()?;
+        stream.writable().await.ok()?;
+        debug!("Connected to {sockaddr}");
+        Some(stream)
+      });
+      pin_mut!(connects);
+      connects.next().await.context("Connecting to {hostport}")
+}
+
+
 async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
     let url = Url::parse(addr).context("Parsing connect address")?;
 
+
+
     match url.scheme() {
         "http" => {
-            let hostport = format!("{}:{}", url.host().context("cannot parse host")?, url.port_or_known_default().context("No port recognized")?);
-            let stream = Async::<TcpStream>::connect(hostport).await?;
+            let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+            let stream = open_connection(&hostport).await?;
             Ok(Connection::Plain{stream})
         },
         "https" => {
+            let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+            let stream = open_connection(&hostport).await?;
             trace!("Negotiating TLS...");
             let tls_neg = Instant::now();
             let host = url.host().context("cannot parse host")?;
-            let hostport = format!("{}:{}", host, url.port_or_known_default().context("No port recognized")?);
-            let stream = Async::<TcpStream>::connect(hostport).await?;
             let mut stream_builder = async_native_tls::TlsConnector::new();
             if let Some(ref cert) = cert {
                 stream_builder = stream_builder.add_root_certificate(cert.clone());
@@ -55,8 +82,10 @@ async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
         #[cfg(unix)]
         "unix" => {
             let path = url.path();
+            let stream = Async::<UnixStream>::connect(path).await.context(format!("Connecting to unix path: {}", path))?;
+            info!("Stream is connected");
             Ok(Connection::Unix{
-                stream: Async::<UnixStream>::connect(path).await.context(format!("Connecting to: {}", path))?
+                stream
             })
         },
         unknown_scheme => bail!("Unknown scheme: {}", unknown_scheme)
@@ -80,7 +109,8 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
             if conn.is_disconnected() || ! keepalive {
                 let conn_start = Instant::now();
                 let conn_time = conn_start.elapsed();
-                conn = connect(&request.addr, &cert).await.context("Connecting")?;
+                let addr = &request.addr;
+                conn = connect(addr, &cert).await.context(format!("Connecting to {addr}"))?;
                 let conn_ready = conn_start.elapsed();
                 event_sink.send(Event::Connection{id, conn_time, tls_time: None, conn_ready}).await;
             }
@@ -182,8 +212,12 @@ Content-Length: 47
 
         fixture base() -> (){
             setup(&mut self) {
-                let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
-                let _ = SimpleLogger::init(log::LevelFilter::Warn, config);
+                let level = LevelFilter::Info;
+                let config = ConfigBuilder::new()
+                    .set_thread_level(level)
+                    .set_location_level(level)
+                    .build();
+                let _ = SimpleLogger::init(level, config);
             }
         }
 
@@ -193,19 +227,20 @@ Content-Length: 47
             let (send,recv) = piper::chan(100);
             let (evsend, evrecv) = piper::chan(100);
 
-            smol::run(async {
+            smol::block_on(async {
                 let responses = [
                     ServerControl::Serve(ServeRequest::new(from_utf8(RESPONSE).unwrap().to_string())),
                     ServerControl::CloseConnection
                 ];
-                let addr = "https://127.0.0.1:8001";
+                let addr = "https://localhost:8001";
                 server_mock(&addr, responses.to_vec()).await?;
+                Timer::after(Duration::from_millis(100)).await;
 
                 info!("Spawning test");
 
-                let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
+                let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certs/root-ca.pem"))?;
                 let fetcher = fetch(recv, 0, evsend, true, Some(cert));
-                Task::local(async move {
+                smol::spawn(async move {
                     info!("Fetcher running!");
                     fetcher.await.unwrap();
                 }).detach();
@@ -230,7 +265,7 @@ Content-Length: 47
             let (send,recv) = piper::chan(100);
             let (evsend, evrecv) = piper::chan(100);
 
-            smol::run(async {
+            smol::block_on(async {
                 let responses = [
                     ServerControl::Serve(ServeRequest::new(from_utf8(RESPONSE).unwrap().to_string())),
                     ServerControl::CloseConnection
@@ -240,9 +275,9 @@ Content-Length: 47
 
                 info!("Spawning test");
 
-                let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certificate.pem"))?;
+                let cert = async_native_tls::Certificate::from_pem(include_bytes!("../resources/test_certs/root-ca.pem"))?;
                 let fetcher = fetch(recv, 0, evsend, true, Some(cert));
-                Task::local(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
+                smol::spawn(async move { fetcher.await.context("Fetcher failure").unwrap();}).detach();
 
                 send.send(ProducerRequest::new(&addr, RequestMethod::Get, vec![], None, RequestConfig{
                     keepalive: true,
@@ -271,7 +306,7 @@ Content-Length: 47
         fixture base() -> (){
             setup(&mut self) {
                 let config = ConfigBuilder::new().set_thread_level(LevelFilter::Info).build();
-                let _ = SimpleLogger::init(log::LevelFilter::Warn, config);
+                let _ = SimpleLogger::init(log::LevelFilter::Info, config);
             }
         }
         test response_fetch(base) {
@@ -280,7 +315,7 @@ Content-Length: 47
 
             let temp_file = mktemp::Temp::new_path();
             let temp_file = temp_file.release(); // See todo below
-            smol::run(async {
+            smol::block_on(async {
                 let responses = [
                     ServerControl::Serve(ServeRequest::new(from_utf8(RESPONSE).unwrap().to_string())),
                     ServerControl::CloseConnection
@@ -289,12 +324,12 @@ Content-Length: 47
                 server_mock(&addr,responses.to_vec()).await?;
 
                 info!("Spawning test");
-                Task::spawn({
+                smol::spawn({
                     info!("Spawned fetcher!");
                     async move {
                       info!("Fetcher running");
                       let res = fetch(recv, 0, evsend, true, None).await.context("Fetcher failure");
-                      info!("Res is {:?}", res);
+                      info!("Response is {:?}", res);
 
                 }}).detach();
                 info!("Spawned!");
@@ -320,7 +355,7 @@ Content-Length: 47
 
             let temp_file = mktemp::Temp::new_path();
             let temp_file = temp_file.release(); // See todo below
-            smol::run(async {
+            smol::block_on(async {
                 let mut d: GzDecoder<&[u8]> = GzDecoder::new(include_bytes!("../resources/yahoo.head.gz"));
                 let mut buffer: Vec<u8> = Vec::new();
                 d.read_to_end(&mut buffer).unwrap();
@@ -333,7 +368,7 @@ Content-Length: 47
                 server_mock(&addr,responses.to_vec()).await?;
 
                 info!("Spawning test");
-                Task::spawn({
+                smol::spawn({
                     info!("Spawned fetcher!");
                     async move {
                       info!("Fetcher running");
@@ -364,7 +399,7 @@ Content-Length: 47
 
             let temp_file = mktemp::Temp::new_path();
             let temp_file = temp_file.release(); // See todo below
-            smol::run(async {
+            smol::block_on(async {
                 let r201 = gz_to_string(include_bytes!("../resources/201.created.gz"));
                 let r200 = gz_to_string(include_bytes!("../resources/200.ok.gz"));
 
@@ -382,7 +417,7 @@ Content-Length: 47
                 server_mock(&addr,responses.to_vec()).await?;
 
                 info!("Spawning test");
-                Task::spawn({
+                smol::spawn({
                     info!("Spawned fetcher!");
                     async move {
                       info!("Fetcher running");
@@ -453,7 +488,7 @@ Content-Length: 47
 
     async fn serve<T: 'static + AsyncRead + AsyncWrite + Unpin + std::marker::Send>(mut stream: T, responses: Vec<ServerControl>) {
         // Spawn a background task serving this connection.
-        Task::local(async move {
+        smol::spawn(async move {
             let mut buffer = vec![0u8;1_000_000];
             for respo in responses {
                 match respo {
@@ -473,8 +508,7 @@ Content-Length: 47
                     }
                 }
             }
-        })
-        .detach();
+        }).detach();
 
     }
 
@@ -485,8 +519,9 @@ Content-Length: 47
         let listener = async move {
             match url.scheme() {
                 "http" => {
-                    let hostport = format!("{}:{}", url.host().context("cannot parse host")?, url.port_or_known_default().context("No port recognized")?);
-                    let listener = Async::<TcpListener>::bind(hostport)?;
+                    let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+                    let addr = hostport.to_socket_addrs().unwrap().next().unwrap();
+                    let listener = Async::<TcpListener>::bind(addr)?;
                     while let Ok((stream,_)) = listener.accept().await {
                         info!("Accepted request!");
                         serve(stream, responses.clone()).await
@@ -494,10 +529,11 @@ Content-Length: 47
 
                 },
                 "https" => {
-                    let identity = Identity::from_pkcs12(include_bytes!("../resources/test_identity.pfx"), "password")?;
+                    let identity = Identity::from_pkcs12(include_bytes!("../resources/test_certs/server.pfx"), "password")?;
                     let tls = TlsAcceptor::from(native_tls::TlsAcceptor::new(identity)?);
-                    let hostport = format!("{}:{}", url.host().context("cannot parse host")?, url.port_or_known_default().context("No port recognized")?);
-                    let listener = Async::<TcpListener>::bind(hostport)?;
+                    let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+                    let addr = hostport.to_socket_addrs().unwrap().next().unwrap();
+                    let listener = Async::<TcpListener>::bind(addr)?;
                     while let Ok((stream,_)) = listener.accept().await {
                         info!("Accepted request!");
                         let stream = tls.accept(stream).await.unwrap();
@@ -523,7 +559,7 @@ Content-Length: 47
         };
 
 
-        Task::local( async {
+        smol::spawn( async {
             info!("Listener running async!");
             listener.await.context("Server Mock failure").unwrap();
         }).detach();

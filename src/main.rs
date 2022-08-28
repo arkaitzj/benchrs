@@ -106,12 +106,12 @@ fn main() -> Result<()> {
 
     info!("Spawning {} threads", num_threads);
     for _ in 0..num_threads {
-	thread::spawn(|| smol::run(future::pending::<()>()));
+	thread::spawn(|| smol::block_on(future::pending::<()>()));
     }
 
     let (s, r) = piper::chan(100_000);
     let (sender, receiver) = piper::chan(1_000_000);
-    let producer = Task::spawn({
+    let producer = smol::spawn({
         let addr = addr.to_owned();
         async move {
             smol::Timer::after(std::time::Duration::from_millis(10)).await; // Lets give some time for fetchers to come online
@@ -123,7 +123,7 @@ fn main() -> Result<()> {
             for _ in 0..nrequests {
 	        futures::select! {
                     _ = s.send(req.clone()).fuse() => {},
-                    _ = smol::Timer::after(Duration::from_secs(10)).fuse() => {
+                    _ = futures::FutureExt::fuse(smol::Timer::after(Duration::from_secs(10))) => {
                         error!("Producer stopped after waiting with a full queue");
                         break;
                     }
@@ -133,12 +133,12 @@ fn main() -> Result<()> {
             Result::<()>::Ok(())
     }});
 
-    let executor = Task::spawn({
+    let executor = smol::spawn({
         let r = r.clone();
         async move {
             let mut all_futs = Vec::new();
             for i in 0..concurrency {
-                all_futs.push(Task::spawn(fetch(r.clone(), i, sender.clone(), keepalive, None)));
+                all_futs.push(smol::spawn(fetch(r.clone(), i, sender.clone(), keepalive, None)));
             }
             let results = futures::future::join_all(all_futs).await;
             let (successes,failures): (Vec<_>,Vec<_>) = results.iter().partition(|r|r.is_ok());
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
                 error!("{} fetchers failed and {} succeeded:\n{:?}\n...", failures.len(), successes.len(), failures[0]);
             }
     }});
-    let reporter = Task::spawn(async move {
+    let reporter = smol::spawn(async move {
             let mut nrequest = 0;
             let mut nconnection = 0;
             let start = Instant::now();
@@ -185,7 +185,7 @@ fn main() -> Result<()> {
 
 
     smol::block_on(async {
-        futures::join!(executor, producer.unwrap(), reporter);
+        futures::join!(executor, producer, reporter);
     });
     Ok(())
 }
