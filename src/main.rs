@@ -39,19 +39,19 @@ fn main() -> Result<()> {
         )
         .arg(
             clap::Arg::with_name("keepalive")
-                .short("k")
+                .short('k')
                 .help("Enables keep alive"),
         )
         .arg(
             clap::Arg::with_name("verbosity")
                 .help("Increases verbosity")
-                .short("v")
+                .short('v')
                 .multiple(true),
         )
         .arg(
             clap::Arg::with_name("request number")
                 .help("Sets the number of requests")
-                .short("n")
+                .short('n')
                 .takes_value(true)
                 .validator(|x| {
                     x.parse::<usize>()
@@ -62,20 +62,20 @@ fn main() -> Result<()> {
         .arg(
             clap::Arg::with_name("postfile")
                 .help("File attach as request body")
-                .short("p")
+                .short('p')
                 .takes_value(true),
         )
         .arg(
             clap::Arg::with_name("header")
                 .multiple(true)
                 .help("Sets a custom header")
-                .short("H")
+                .short('H')
                 .takes_value(true),
         )
         .arg(
             clap::Arg::with_name("method")
                 .help("Request method: default GET")
-                .short("m")
+                .short('m')
                 .takes_value(true)
                 .validator(|x| {
                     if x.parse::<producer::RequestMethod>().is_ok() {
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         .arg(
             clap::Arg::with_name("concurrency")
                 .help("Sets the concurrency level")
-                .short("c")
+                .short('c')
                 .takes_value(true)
                 .validator(|x| {
                     x.parse::<usize>()
@@ -125,7 +125,7 @@ fn main() -> Result<()> {
         vec![]
     };
     let mut config_builder = ConfigBuilder::new();
-    config_builder.set_time_format("%H:%M:%S%.3f".to_string());
+    config_builder.set_time_format_custom(format_description!("[hour]:[minute]:[second].[subsecond]"));
     let _ = SimpleLogger::init(log_level, config_builder.build());
     info!("{}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
