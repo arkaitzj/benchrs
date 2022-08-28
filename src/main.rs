@@ -46,7 +46,7 @@ fn main() -> Result<()> {
             clap::Arg::with_name("verbosity")
                 .help("Increases verbosity")
                 .short('v')
-                .multiple(true),
+                .action(clap::ArgAction::Count),
         )
         .arg(
             clap::Arg::with_name("request number")
@@ -109,7 +109,7 @@ fn main() -> Result<()> {
     let addr = matches.value_of("url").unwrap().to_owned();
     let postfile = matches.value_of("postfile");
 
-    let log_level = match matches.occurrences_of("verbosity") {
+    let log_level = match matches.get_one::<u8>("verbosity").unwrap() {
         0 => LevelFilter::Info,
         1 => LevelFilter::Debug,
         _ => LevelFilter::Trace,
