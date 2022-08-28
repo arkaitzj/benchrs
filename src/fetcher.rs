@@ -1,72 +1,85 @@
-use anyhow::{bail, Context as _, Result};
-use std::net::TcpStream;
+use crate::parser::Parser;
 use crate::{Event, ProducerRequest};
-use log::*;
+use anyhow::{bail, Context as _, Result};
+use async_native_tls::Certificate;
+use futures::pin_mut;
 use futures::prelude::*;
-use url::Url;
-use std::time::Instant;
+use log::*;
+use smol::future::FutureExt;
 use smol::Async;
 use smol::Timer;
-use crate::parser::Parser;
-use std::str::from_utf8;
-use async_native_tls::Certificate;
-#[cfg(unix)]
-use std::os::unix::net::{UnixStream};
-use std::time::Duration;
+use std::net::TcpStream;
 use std::net::ToSocketAddrs;
-use futures::pin_mut;
-use smol::future::FutureExt;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+use std::str::from_utf8;
+use std::time::Duration;
+use std::time::Instant;
+use url::Url;
 
 enum Connection {
-    Plain{ stream: Async<TcpStream>},
-    Secure{ stream: async_native_tls::TlsStream<Async<TcpStream>>},
+    Plain {
+        stream: Async<TcpStream>,
+    },
+    Secure {
+        stream: async_native_tls::TlsStream<Async<TcpStream>>,
+    },
     #[cfg(unix)]
-    Unix{ stream: Async<UnixStream>},
-    Disconnected
+    Unix {
+        stream: Async<UnixStream>,
+    },
+    Disconnected,
 }
 
 impl Connection {
     fn is_disconnected(&self) -> bool {
         match &self {
             Connection::Disconnected => true,
-            _ => false
+            _ => false,
         }
     }
 }
 
 pub async fn open_connection(hostport: &str) -> Result<Async<TcpStream>> {
-
     let resolved_addrs = hostport.to_socket_addrs()?;
     debug!("Addresses resolved from {hostport} to {resolved_addrs:?}");
 
-    let connects = stream::iter(resolved_addrs).filter_map(|sockaddr| async move { 
-      trace!("Connection {sockaddr} await....");
-      let stream = Async::<TcpStream>::connect(sockaddr).or(async{
-        Timer::after(Duration::from_millis(100)).await;
-          Err(std::io::ErrorKind::TimedOut.into())
-        }).await.ok()?;
+    let connects = stream::iter(resolved_addrs).filter_map(|sockaddr| async move {
+        trace!("Connection {sockaddr} await....");
+        let stream = Async::<TcpStream>::connect(sockaddr)
+            .or(async {
+                Timer::after(Duration::from_millis(100)).await;
+                Err(std::io::ErrorKind::TimedOut.into())
+            })
+            .await
+            .ok()?;
         stream.writable().await.ok()?;
         debug!("Connected to {sockaddr}");
         Some(stream)
-      });
-      pin_mut!(connects);
-      connects.next().await.context("Connecting to {hostport}")
+    });
+    pin_mut!(connects);
+    connects.next().await.context("Connecting to {hostport}")
 }
-
 
 async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
     let url = Url::parse(addr).context("Parsing connect address")?;
 
-
-
     match url.scheme() {
         "http" => {
-            let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+            let hostport = format!(
+                "{}:{}",
+                url.host().context(format!("cannot parse host: {url}"))?,
+                url.port_or_known_default().context("No port recognized")?
+            );
             let stream = open_connection(&hostport).await?;
-            Ok(Connection::Plain{stream})
-        },
+            Ok(Connection::Plain { stream })
+        }
         "https" => {
-            let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+            let hostport = format!(
+                "{}:{}",
+                url.host().context(format!("cannot parse host: {url}"))?,
+                url.port_or_known_default().context("No port recognized")?
+            );
             let stream = open_connection(&hostport).await?;
             trace!("Negotiating TLS...");
             let tls_neg = Instant::now();
@@ -77,23 +90,28 @@ async fn connect(addr: &str, cert: &Option<Certificate>) -> Result<Connection> {
             }
             let stream = stream_builder.connect(host.to_string(), stream).await?;
             trace!("TLS negotiated in {}", tls_neg.elapsed().as_millis());
-            Ok(Connection::Secure{stream})
-        },
+            Ok(Connection::Secure { stream })
+        }
         #[cfg(unix)]
         "unix" => {
             let path = url.path();
-            let stream = Async::<UnixStream>::connect(path).await.context(format!("Connecting to unix path: {}", path))?;
+            let stream = Async::<UnixStream>::connect(path)
+                .await
+                .context(format!("Connecting to unix path: {}", path))?;
             info!("Stream is connected");
-            Ok(Connection::Unix{
-                stream
-            })
-        },
-        unknown_scheme => bail!("Unknown scheme: {}", unknown_scheme)
+            Ok(Connection::Unix { stream })
+        }
+        unknown_scheme => bail!("Unknown scheme: {}", unknown_scheme),
     }
-
 }
 
-pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_sink: piper::Sender<Event>, keepalive: bool, cert: Option<Certificate>) -> Result<()> {
+pub async fn fetch(
+    producer: piper::Receiver<ProducerRequest>,
+    id: usize,
+    event_sink: piper::Sender<Event>,
+    keepalive: bool,
+    cert: Option<Certificate>,
+) -> Result<()> {
     trace!("Fetch!");
 
     let mut req_handled = 0;
@@ -106,30 +124,45 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
         while !finished {
             req_handled += 1;
             parser.reset();
-            if conn.is_disconnected() || ! keepalive {
+            if conn.is_disconnected() || !keepalive {
                 let conn_start = Instant::now();
                 let conn_time = conn_start.elapsed();
                 let addr = &request.addr;
-                conn = connect(addr, &cert).await.context(format!("Connecting to {addr}"))?;
+                conn = connect(addr, &cert)
+                    .await
+                    .context(format!("Connecting to {addr}"))?;
                 let conn_ready = conn_start.elapsed();
-                event_sink.send(Event::Connection{id, conn_time, tls_time: None, conn_ready}).await;
+                event_sink
+                    .send(Event::Connection {
+                        id,
+                        conn_time,
+                        tls_time: None,
+                        conn_ready,
+                    })
+                    .await;
             }
             let request_start = Instant::now();
             let req_result = match conn {
-                Connection::Plain{ref mut stream}  => do_request(stream, &mut request, &mut parser).await,
-                Connection::Secure{ref mut stream} => do_request(stream, &mut request, &mut parser).await,
+                Connection::Plain { ref mut stream } => {
+                    do_request(stream, &mut request, &mut parser).await
+                }
+                Connection::Secure { ref mut stream } => {
+                    do_request(stream, &mut request, &mut parser).await
+                }
                 #[cfg(unix)]
-                Connection::Unix{ref mut stream} => do_request(stream, &mut request, &mut parser).await,
-                _ => panic!("Disconnected!")
+                Connection::Unix { ref mut stream } => {
+                    do_request(stream, &mut request, &mut parser).await
+                }
+                _ => panic!("Disconnected!"),
             };
             if let Ok(status) = req_result {
                 match status {
                     Status::Redirect => {
                         finished = false;
-                    },
+                    }
                     Status::Continue => {
                         finished = true;
-                    },
+                    }
                     Status::CloseConnection => {
                         trace!("[{}]Response closed the connection, disconnecting...", id);
                         conn = Connection::Disconnected;
@@ -141,29 +174,53 @@ pub async fn fetch(producer: piper::Receiver<ProducerRequest>, id: usize, event_
                 conn = Connection::Disconnected;
                 continue 'recv_loop;
             }
-            event_sink.send(Event::Request{id, request_time: request_start.elapsed()}).await;
+            event_sink
+                .send(Event::Request {
+                    id,
+                    request_time: request_start.elapsed(),
+                })
+                .await;
         }
-        trace!("[{}] handled: {}, queue size: {}", id, req_handled, producer.len());
-
+        trace!(
+            "[{}] handled: {}, queue size: {}",
+            id,
+            req_handled,
+            producer.len()
+        );
     }
-    debug!("Fetcher {} finished, handled {} requests, {} bytes  in buffer", id, req_handled, parser.bytes.len());
+    debug!(
+        "Fetcher {} finished, handled {} requests, {} bytes  in buffer",
+        id,
+        req_handled,
+        parser.bytes.len()
+    );
     Ok(())
 }
 
 #[derive(Debug)]
-enum Status{
+enum Status {
     Continue,
     CloseConnection,
-    Redirect
+    Redirect,
 }
 
-async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: &mut ProducerRequest, parser: &mut Parser) -> Result<Status> {
-
+async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut T,
+    request: &mut ProducerRequest,
+    parser: &mut Parser,
+) -> Result<Status> {
     let req = request.get_request();
     trace!("Sending: \n{}", from_utf8(&req).unwrap());
     stream.write_all(&req).await?;
-    let response = parser.read_header(stream).await.context("Request Header Parsing")?;
-    trace!("Response header({}): \n{}", response.status, from_utf8(&parser.bytes[0..parser.read_idx])?);
+    let response = parser
+        .read_header(stream)
+        .await
+        .context("Request Header Parsing")?;
+    trace!(
+        "Response header({}): \n{}",
+        response.status,
+        from_utf8(&parser.bytes[0..parser.read_idx])?
+    );
 
     let mut status = Status::Continue;
 
@@ -177,7 +234,10 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
         status = Status::CloseConnection;
     }
     if request.method != crate::producer::RequestMethod::Head {
-        parser.drop_body(stream, &response).await.context("Body parsing")?;
+        parser
+            .drop_body(stream, &response)
+            .await
+            .context("Body parsing")?;
     }
     trace!("Body dropped!");
     Ok(status)
@@ -186,16 +246,13 @@ async fn do_request<T: AsyncRead + AsyncWrite + Unpin>(stream: &mut T, request: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
-    use smol::Task;
-    use simplelog::*;
     use crate::producer::*;
     use async_native_tls::{Identity, TlsAcceptor};
     use flate2::read::GzDecoder;
-    use std::io::Read;
     use galvanic_test::test_suite;
-
-
+    use simplelog::*;
+    use std::io::Read;
+    use std::net::TcpListener;
 
     const RESPONSE: &[u8] = br#"
 HTTP/1.1 200 OK
@@ -205,7 +262,7 @@ Content-Length: 47
 <!DOCTYPE html><html><body>Hello!</body></html>
 "#;
 
-    test_suite!{
+    test_suite! {
         name fetcher_generic;
 
         use super::*;
@@ -297,8 +354,8 @@ Content-Length: 47
         }
     }
 
-  #[cfg(unix)]
-  test_suite!{
+    #[cfg(unix)]
+    test_suite! {
         name fetcher_unix;
 
         use super::*;
@@ -463,15 +520,15 @@ Content-Length: 47
     }
 
     #[derive(Clone)]
-    struct ServeRequest{
+    struct ServeRequest {
         content: String,
-        request_verifier: Option<fn(String)>
+        request_verifier: Option<fn(String)>,
     }
     impl ServeRequest {
         fn new(content: String) -> Self {
-            ServeRequest{
+            ServeRequest {
                 content,
-                request_verifier: None
+                request_verifier: None,
             }
         }
         fn on_request(mut self, request_verifier: fn(String)) -> Self {
@@ -483,13 +540,16 @@ Content-Length: 47
     #[derive(Clone)]
     enum ServerControl {
         Serve(ServeRequest),
-        CloseConnection
+        CloseConnection,
     }
 
-    async fn serve<T: 'static + AsyncRead + AsyncWrite + Unpin + std::marker::Send>(mut stream: T, responses: Vec<ServerControl>) {
+    async fn serve<T: 'static + AsyncRead + AsyncWrite + Unpin + std::marker::Send>(
+        mut stream: T,
+        responses: Vec<ServerControl>,
+    ) {
         // Spawn a background task serving this connection.
         smol::spawn(async move {
-            let mut buffer = vec![0u8;1_000_000];
+            let mut buffer = vec![0u8; 1_000_000];
             for respo in responses {
                 match respo {
                     ServerControl::Serve(response) => {
@@ -500,16 +560,16 @@ Content-Length: 47
                             verifier(from_utf8(&buffer).unwrap().to_string());
                         }
                         stream.write_all(response.content.as_bytes()).await.unwrap()
-                    },
-                    _ =>  {
+                    }
+                    _ => {
                         info!("Dropping stream");
                         drop(stream);
                         break;
                     }
                 }
             }
-        }).detach();
-
+        })
+        .detach();
     }
 
     async fn server_mock(addr: &str, responses: Vec<ServerControl>) -> Result<()> {
@@ -519,51 +579,61 @@ Content-Length: 47
         let listener = async move {
             match url.scheme() {
                 "http" => {
-                    let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+                    let hostport = format!(
+                        "{}:{}",
+                        url.host().context(format!("cannot parse host: {url}"))?,
+                        url.port_or_known_default().context("No port recognized")?
+                    );
                     let addr = hostport.to_socket_addrs().unwrap().next().unwrap();
                     let listener = Async::<TcpListener>::bind(addr)?;
-                    while let Ok((stream,_)) = listener.accept().await {
+                    while let Ok((stream, _)) = listener.accept().await {
                         info!("Accepted request!");
                         serve(stream, responses.clone()).await
                     }
-
-                },
+                }
                 "https" => {
-                    let identity = Identity::from_pkcs12(include_bytes!("../resources/test_certs/server.pfx"), "password")?;
+                    let identity = Identity::from_pkcs12(
+                        include_bytes!("../resources/test_certs/server.pfx"),
+                        "password",
+                    )?;
                     let tls = TlsAcceptor::from(native_tls::TlsAcceptor::new(identity)?);
-                    let hostport = format!("{}:{}", url.host().context(format!("cannot parse host: {url}"))?, url.port_or_known_default().context("No port recognized")?);
+                    let hostport = format!(
+                        "{}:{}",
+                        url.host().context(format!("cannot parse host: {url}"))?,
+                        url.port_or_known_default().context("No port recognized")?
+                    );
                     let addr = hostport.to_socket_addrs().unwrap().next().unwrap();
                     let listener = Async::<TcpListener>::bind(addr)?;
-                    while let Ok((stream,_)) = listener.accept().await {
+                    while let Ok((stream, _)) = listener.accept().await {
                         info!("Accepted request!");
                         let stream = tls.accept(stream).await.unwrap();
                         serve(stream, responses.clone()).await
                     }
-                },
+                }
                 #[cfg(unix)]
                 "unix" => {
                     use std::os::unix::net::UnixListener;
                     info!("Listening on unix socket: {}", url.path());
-                    let listener = Async::<UnixListener>::bind(url.path()).context("Binding error")?;
+                    let listener =
+                        Async::<UnixListener>::bind(url.path()).context("Binding error")?;
                     info!("Awaiting for connection!");
-                    while let Ok((stream,_)) = listener.accept().await {
+                    while let Ok((stream, _)) = listener.accept().await {
                         info!("Accepted request!");
                         serve(stream, responses.clone()).await
                     }
                     info!("Listener exited");
                 }
-                unknown => panic!("Unknown scheme: {}", unknown)
+                unknown => panic!("Unknown scheme: {}", unknown),
             }
             info!("Server mock is done!");
             Result::<()>::Ok(())
         };
 
-
-        smol::spawn( async {
+        smol::spawn(async {
             info!("Listener running async!");
             listener.await.context("Server Mock failure").unwrap();
-        }).detach();
+        })
+        .detach();
         Ok(())
     }
 }
-
