@@ -25,7 +25,7 @@ async-channel = "1.7.1"
 
 
 [dev-dependencies]
-flate2 = "1.0.24"
+flate2 = "1.0.25"
 mktemp = "0.4.1"
 galvanic-test = "0.2.0"
 
