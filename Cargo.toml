@@ -9,7 +9,7 @@ repository = "https://github.com/arkaitzj/benchrs"
 readme = "README.md"
 
 [dependencies]
-smol = "1.2.5"
+smol = "1.3.0"
 url = "2.2.2"
 futures = "0.3.24"
 anyhow = "1.0.62"
