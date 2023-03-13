@@ -11,7 +11,7 @@ readme = "README.md"
 [dependencies]
 smol = "1.2.5"
 url = "2.2.2"
-futures = "0.3.24"
+futures = "0.3.27"
 anyhow = "1.0.62"
 async-native-tls = "0.4.0"
 native-tls = "0.2.10"
